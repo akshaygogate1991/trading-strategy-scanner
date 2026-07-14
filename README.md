@@ -4,6 +4,7 @@ Streamlit scanner for a conservative Indian market swing strategy:
 
 - 18 EMA pullback continuation
 - 20-day breakout with volume confirmation
+- Objective Elliott Wave swing filter
 - Nifty trend filter
 - ATR/swing-low stop loss
 - 1.5R, 2.5R, and 3R targets
