@@ -115,6 +115,10 @@ class ScanSettings:
     batch_size: int
     use_elliott_filter: bool
     min_wave_score: int
+    ma_type: str = "EMA"
+    ma_length: int = 18
+    use_weekly_filter: bool = True
+    weekly_ma_length: int = 20
 
 
 def normalize_tickers(raw: Iterable[str]) -> list[str]:
@@ -151,9 +155,16 @@ def fetch_market_data(tickers: tuple[str, ...], period: str) -> dict[str, pd.Dat
     return data
 
 
-def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
+def moving_average(series: pd.Series, length: int, ma_type: str) -> pd.Series:
+    """Fast moving average. EMA reacts quicker, SMA is smoother/laggier."""
+    if ma_type.upper() == "SMA":
+        return series.rolling(length).mean()
+    return series.ewm(span=length, adjust=False).mean()
+
+
+def add_indicators(df: pd.DataFrame, ma_type: str = "EMA", ma_length: int = 18) -> pd.DataFrame:
     out = df.copy()
-    out["ema18"] = out["Close"].ewm(span=18, adjust=False).mean()
+    out["ma_fast"] = moving_average(out["Close"], ma_length, ma_type)
     out["ema50"] = out["Close"].ewm(span=50, adjust=False).mean()
     out["ema200"] = out["Close"].ewm(span=200, adjust=False).mean()
     out["vol20"] = out["Volume"].rolling(20).mean()
@@ -269,31 +280,83 @@ def elliott_wave_context(df: pd.DataFrame) -> dict:
     return default
 
 
+def to_weekly(df: pd.DataFrame) -> pd.DataFrame:
+    """Resample daily OHLCV into weekly bars (week ending Friday).
+
+    The final bar is the in-progress week when scanning mid-week. That is
+    intentional for a live scanner, but it means the weekly MA can shift
+    until Friday's close.
+    """
+    if not isinstance(df.index, pd.DatetimeIndex):
+        return pd.DataFrame()
+    weekly = df.resample("W-FRI").agg(
+        {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}
+    )
+    return weekly.dropna(subset=["Open", "High", "Low", "Close"])
+
+
+def weekly_trend(df: pd.DataFrame, settings: ScanSettings) -> dict:
+    """Higher-timeframe confirmation: weekly close above a rising weekly MA."""
+    weekly = to_weekly(df)
+    length = settings.weekly_ma_length
+
+    if len(weekly) < length + 4:
+        return {
+            "ok": not settings.use_weekly_filter,
+            "label": "Weekly n/a",
+            "detail": f"Only {len(weekly)} weekly bars; need {length + 4}. Increase History to 2y.",
+        }
+
+    weekly = weekly.copy()
+    weekly["ma"] = moving_average(weekly["Close"], length, settings.ma_type)
+    last = weekly.iloc[-1]
+    prior = weekly.iloc[-4]
+
+    if pd.isna(last["ma"]) or pd.isna(prior["ma"]):
+        return {"ok": not settings.use_weekly_filter, "label": "Weekly n/a", "detail": "Weekly MA not seeded."}
+
+    close_above = float(last["Close"]) > float(last["ma"])
+    ma_rising = float(last["ma"]) > float(prior["ma"])
+
+    if close_above and ma_rising:
+        label, detail = "Weekly up", "Weekly close above a rising weekly MA."
+    elif close_above:
+        label, detail = "Weekly flat", "Weekly close above the MA, but the MA is not rising."
+    elif ma_rising:
+        label, detail = "Weekly pullback", "Weekly MA still rising, but price has slipped below it."
+    else:
+        label, detail = "Weekly down", "Weekly close below a falling weekly MA."
+
+    ok = (close_above and ma_rising) if settings.use_weekly_filter else True
+    return {"ok": ok, "label": label, "detail": detail}
+
+
 def market_is_healthy(index_data: dict[str, pd.DataFrame]) -> tuple[bool, str]:
     nifty = index_data.get("^NSEI")
     if nifty is None or nifty.empty:
         return True, "Nifty data unavailable; market filter relaxed."
-    latest = add_indicators(nifty).iloc[-1]
+    enriched = add_indicators(nifty)
+    latest = enriched.iloc[-1]
     if latest["Close"] > latest["ema50"] and latest["ema50"] > latest["ema200"]:
         return True, "Market filter bullish: Nifty above 50 EMA and 200 EMA."
-    if latest["Close"] > latest["ema200"] and latest["ema50"] > add_indicators(nifty).iloc[-6]["ema50"]:
+    if latest["Close"] > latest["ema200"] and latest["ema50"] > enriched.iloc[-6]["ema50"]:
         return True, "Market filter acceptable: Nifty above 200 EMA and 50 EMA rising."
     return False, "Market filter weak: Nifty trend is not supportive for fresh long trades."
 
 
 def scan_symbol(ticker: str, df: pd.DataFrame, settings: ScanSettings, allow_long: bool) -> dict | None:
-    df = add_indicators(df)
+    df = add_indicators(df, settings.ma_type, settings.ma_length)
     latest = df.iloc[-1]
     previous = df.iloc[-2]
 
-    if any(pd.isna(latest[col]) for col in ["ema18", "ema50", "rsi14", "atr14", "high20_prev"]):
+    if any(pd.isna(latest[col]) for col in ["ma_fast", "ema50", "rsi14", "atr14", "high20_prev"]):
         return None
 
     close = float(latest["Close"])
     high = float(latest["High"])
     low = float(latest["Low"])
     atr = float(latest["atr14"])
-    ema18 = float(latest["ema18"])
+    ma_fast = float(latest["ma_fast"])
     ema50 = float(latest["ema50"])
     high20_prev = float(latest["high20_prev"])
     rsi = float(latest["rsi14"])
@@ -305,17 +368,20 @@ def scan_symbol(ticker: str, df: pd.DataFrame, settings: ScanSettings, allow_lon
     wave_ok = (not settings.use_elliott_filter) or (
         wave["bias"] == "Bullish" and int(wave["score"]) >= settings.min_wave_score
     )
-    volume_ok = vol20 > 0 and volume >= 1.25 * vol20
-    breakout = allow_long and trend_ok and wave_ok and close > high20_prev and volume_ok and rsi >= 55
+    week = weekly_trend(df, settings)
+    gates = allow_long and trend_ok and wave_ok and week["ok"]
 
-    touched_ema18 = low <= ema18 * 1.01 and close >= ema18
+    volume_ok = vol20 > 0 and volume >= 1.25 * vol20
+    breakout = gates and close > high20_prev and volume_ok and rsi >= 55
+
+    touched_ma = low <= ma_fast * 1.01 and close >= ma_fast
     reclaimed_strength = close > float(previous["High"]) and rsi >= 48
-    pullback = allow_long and trend_ok and wave_ok and touched_ema18 and reclaimed_strength
+    pullback = gates and touched_ma and reclaimed_strength
 
     if not breakout and not pullback:
         return None
 
-    setup = "20-day breakout" if breakout else "18 EMA pullback"
+    setup = "20-day breakout" if breakout else f"{settings.ma_length} {settings.ma_type} pullback"
     entry = round(max(close, high), 2)
     swing_low = float(df["Low"].tail(8).min())
     atr_stop = close - (1.5 * atr)
@@ -340,14 +406,16 @@ def scan_symbol(ticker: str, df: pd.DataFrame, settings: ScanSettings, allow_lon
     score += 30 if breakout else 20
     score += min(25, max(0, int((rsi - 45) * 1.2)))
     score += 20 if volume_ok else 5
-    score += 15 if close > ema18 > ema50 else 5
+    score += 15 if close > ma_fast > ema50 else 5
     score += min(20, int(wave["score"] * 0.2))
-    score += 10 if ticker in INDICES.values() else 0
+    score += 10 if week["label"] == "Weekly up" else 0
+    score = min(score, 100)
 
     return {
         "Symbol": ticker,
         "Setup": setup,
         "Score": score,
+        "Weekly": week["label"],
         "Last Close": round(close, 2),
         "Entry": entry,
         "Stop Loss": stop_loss,
@@ -386,14 +454,28 @@ def run_scan(tickers: list[str], settings: ScanSettings) -> tuple[pd.DataFrame, 
 st.set_page_config(page_title="Nifty Strategy Scanner", page_icon="📈", layout="wide")
 
 st.title("Nifty Strategy Scanner")
-st.caption("18 EMA pullback + 20-day breakout scanner for Nifty 100, Nifty 50, and Bank Nifty.")
+st.caption(
+    "Moving-average pullback + 20-day breakout scanner for Nifty 100, Nifty 50, and Bank Nifty, "
+    "with weekly trend confirmation."
+)
 
 with st.sidebar:
     st.header("Scan Settings")
     capital = st.number_input("Trading capital", min_value=1000, value=100000, step=5000)
     risk_percent = st.slider("Risk per trade (%)", min_value=0.25, max_value=2.0, value=1.0, step=0.25)
     min_rr = st.slider("Minimum reward:risk", min_value=1.5, max_value=3.0, value=2.0, step=0.25)
-    data_period = st.selectbox("History", ["6mo", "1y", "2y"], index=1)
+    data_period = st.selectbox("History", ["6mo", "1y", "2y"], index=2)
+
+    st.divider()
+    st.caption("Trend engine")
+    ma_type = st.radio("Fast MA type", ["EMA", "SMA"], index=0, horizontal=True)
+    ma_length = st.number_input("Fast MA length", min_value=5, max_value=50, value=18, step=1)
+    use_weekly_filter = st.checkbox("Require weekly uptrend", value=True)
+    weekly_ma_length = st.number_input(
+        "Weekly MA length", min_value=5, max_value=40, value=20, step=1, disabled=not use_weekly_filter
+    )
+    st.divider()
+
     use_elliott_filter = st.checkbox("Use Elliott Wave filter", value=True)
     min_wave_score = st.slider("Minimum Elliott score", min_value=0, max_value=100, value=45, step=5)
     scan_universe = st.multiselect(
@@ -423,6 +505,10 @@ settings = ScanSettings(
     batch_size=1,
     use_elliott_filter=bool(use_elliott_filter),
     min_wave_score=int(min_wave_score),
+    ma_type=str(ma_type),
+    ma_length=int(ma_length),
+    use_weekly_filter=bool(use_weekly_filter),
+    weekly_ma_length=int(weekly_ma_length),
 )
 
 left, right = st.columns([2, 1])
