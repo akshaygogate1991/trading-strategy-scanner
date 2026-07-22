@@ -333,6 +333,20 @@ def weekly_trend(df: pd.DataFrame, settings: ScanSettings) -> dict:
     return {"ok": ok, "label": label, "detail": detail}
 
 
+def to_4h(df: pd.DataFrame | None) -> pd.DataFrame:
+    """Combine hourly (or finer) intraday bars into 4-hour bars.
+
+    Neither Yahoo nor SmartAPI serves a native 4-hour candle, so we build it
+    by resampling hourly data.
+    """
+    if df is None or not isinstance(df.index, pd.DatetimeIndex):
+        return pd.DataFrame()
+    bars = df.resample("4h").agg(
+        {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}
+    )
+    return bars.dropna(subset=["Open", "High", "Low", "Close"])
+
+
 def timeframe_wave(df: pd.DataFrame | None) -> dict:
     """Run the Elliott Wave read on any timeframe's OHLCV frame.
 
@@ -472,7 +486,7 @@ def scan_symbol(ticker: str, df: pd.DataFrame, settings: ScanSettings, allow_lon
         "Wave Stage": wave["stage"],
         "Wave Score": int(wave["score"]),
         "Weekly Wave": weekly_wave["bias"],
-        "Hourly Wave": "—",
+        "4H Wave": "—",
         "MTF Align": "Yes" if mtf_aligned else "No",
         "RSI 14": round(rsi, 1),
         "Reward/Risk": rr,
@@ -491,8 +505,8 @@ def run_scan(tickers: list[str], settings: ScanSettings) -> tuple[pd.DataFrame, 
         signal = scan_symbol(ticker, df, settings, allow_long or ticker in INDICES.values())
         if signal:
             if settings.use_hourly_wave:
-                intraday = fetch_intraday(ticker)
-                signal["Hourly Wave"] = timeframe_wave(intraday)["bias"] if intraday is not None else "n/a"
+                four_h = to_4h(fetch_intraday(ticker))
+                signal["4H Wave"] = timeframe_wave(four_h)["bias"] if len(four_h) else "n/a"
             rows.append(signal)
 
     signals = pd.DataFrame(rows)
@@ -528,7 +542,7 @@ with st.sidebar:
 
     st.caption("Multi-timeframe Elliott Wave")
     use_mtf_wave = st.checkbox("Require weekly + daily wave to align", value=True)
-    use_hourly_wave = st.checkbox("Also check hourly wave (slower, candidates only)", value=False)
+    use_hourly_wave = st.checkbox("Also check 4-hour wave (slower, candidates only)", value=False)
     st.divider()
 
     use_elliott_filter = st.checkbox("Use Elliott Wave filter", value=True)

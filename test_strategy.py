@@ -163,10 +163,21 @@ for seed in range(40):
                           S(**base, use_mtf_wave=False), True)
     if row:
         break
-assert row and "Weekly Wave" in row and "MTF Align" in row and "Hourly Wave" in row
+assert row and "Weekly Wave" in row and "MTF Align" in row and "4H Wave" in row
 assert row["MTF Align"] in ("Yes", "No")
 assert row["Weekly Wave"] in ("Bullish", "Neutral")
 print(f"[13] new columns present -> Weekly Wave={row['Weekly Wave']}, "
-      f"MTF Align={row['MTF Align']}, Hourly Wave={row['Hourly Wave']}")
+      f"MTF Align={row['MTF Align']}, 4H Wave={row['4H Wave']}")
+
+# to_4h resamples hourly bars into 4-hour bars
+_h = pd.DataFrame(
+    {"Open": 1.0, "High": 1.0, "Low": 1.0, "Close": 1.0, "Volume": 1.0},
+    index=pd.date_range("2025-01-01 09:00", periods=200, freq="1h"),
+)
+_4h = app.to_4h(_h)
+assert 0 < len(_4h) <= len(_h) / 3, "4h bars should be far fewer than hourly"
+assert app.to_4h(None).empty, "None handled"
+assert app.to_4h(_h.reset_index(drop=True)).empty, "non-datetime index handled"
+print(f"[14] to_4h: {len(_h)} hourly -> {len(_4h)} four-hour bars")
 
 print("\nAll checks passed.")
