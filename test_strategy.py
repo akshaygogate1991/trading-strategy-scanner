@@ -126,10 +126,47 @@ print(f"[8b] weekly gate alone rejects {blocked}/120 choppy charts; "
       "overlap with the daily close>ema50 gate is why net effect is small")
 
 r = app.scan_symbol("TEST.NS", make_series(420, trend=0.0009, seed=1),
-                    S(**base, ma_type="SMA", ma_length=21, use_weekly_filter=False), True)
+                    S(**base, ma_type="SMA", ma_length=21, use_weekly_filter=False,
+                      use_mtf_wave=False), True)
 if r:
     print(f"[9] setup label reflects selector: {r['Setup']!r}")
 
 assert app.scan_symbol("X.NS", make_series(30), S(**base), True) is None
 print("[10] tiny dataframe returns None, no crash")
+
+# --- multi-timeframe Elliott Wave ---
+# timeframe_wave returns a valid schema on a weekly frame, and degrades on tiny input
+wk = app.to_weekly(make_series(520, trend=0.0012, seed=2))
+w = app.timeframe_wave(wk)
+assert set(("bias", "stage", "score")).issubset(w), "wave schema must be complete"
+assert w["bias"] in ("Bullish", "Neutral") and 0 <= w["score"] <= 100
+assert app.timeframe_wave(make_series(10))["bias"] == "Neutral", "tiny frame -> Neutral, no crash"
+assert app.timeframe_wave(None)["stage"] == "Insufficient data", "None handled"
+print(f"[11] timeframe_wave: weekly bias={w['bias']} score={w['score']}; tiny/None handled")
+
+# MTF alignment gate must never *increase* signal count vs. off
+mtf_on = mtf_off = 0
+for seed in range(20):
+    df = make_series(420, trend=0.0011, seed=seed)
+    if app.scan_symbol("T.NS", df, S(**base, use_mtf_wave=True), True):
+        mtf_on += 1
+    if app.scan_symbol("T.NS", df, S(**base, use_mtf_wave=False), True):
+        mtf_off += 1
+assert mtf_on <= mtf_off, "MTF alignment gate must never add signals"
+print(f"[12] MTF gate: aligned-only={mtf_on} vs off={mtf_off} "
+      f"-> gate removed {mtf_off - mtf_on} of {mtf_off}")
+
+# new output columns exist and carry sane values
+row = None
+for seed in range(40):
+    row = app.scan_symbol("T.NS", make_series(420, trend=0.0011, seed=seed),
+                          S(**base, use_mtf_wave=False), True)
+    if row:
+        break
+assert row and "Weekly Wave" in row and "MTF Align" in row and "Hourly Wave" in row
+assert row["MTF Align"] in ("Yes", "No")
+assert row["Weekly Wave"] in ("Bullish", "Neutral")
+print(f"[13] new columns present -> Weekly Wave={row['Weekly Wave']}, "
+      f"MTF Align={row['MTF Align']}, Hourly Wave={row['Hourly Wave']}")
+
 print("\nAll checks passed.")

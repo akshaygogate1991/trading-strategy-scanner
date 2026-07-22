@@ -119,6 +119,8 @@ class ScanSettings:
     ma_length: int = 18
     use_weekly_filter: bool = True
     weekly_ma_length: int = 20
+    use_mtf_wave: bool = True
+    use_hourly_wave: bool = False
 
 
 def normalize_tickers(raw: Iterable[str]) -> list[str]:
@@ -331,6 +333,44 @@ def weekly_trend(df: pd.DataFrame, settings: ScanSettings) -> dict:
     return {"ok": ok, "label": label, "detail": detail}
 
 
+def timeframe_wave(df: pd.DataFrame | None) -> dict:
+    """Run the Elliott Wave read on any timeframe's OHLCV frame.
+
+    Used for higher/lower timeframe confirmation: pass weekly bars for the
+    weekly wave, daily bars for the daily wave, hourly bars for the hourly wave.
+    """
+    if df is None or len(df) < 30:
+        return {
+            "bias": "Neutral",
+            "stage": "Insufficient data",
+            "score": 0,
+            "detail": "Not enough bars for a wave count on this timeframe.",
+        }
+    return elliott_wave_context(add_indicators(df))
+
+
+@st.cache_data(ttl=60 * 20, show_spinner=False)
+def fetch_intraday(ticker: str, interval: str = "60m", period: str = "60d") -> pd.DataFrame | None:
+    """Intraday candles for the hourly wave check.
+
+    Uses yfinance today. To get exact NSE data, swap this for an Angel One
+    SmartAPI call (free historical candles) once an API key is configured.
+    """
+    try:
+        frame = yf.download(
+            ticker, period=period, interval=interval,
+            auto_adjust=True, progress=False, threads=False,
+        )
+    except Exception:
+        return None
+    if frame.empty:
+        return None
+    if isinstance(frame.columns, pd.MultiIndex):
+        frame.columns = frame.columns.get_level_values(0)
+    frame = frame.dropna(subset=["Open", "High", "Low", "Close"])
+    return frame if len(frame) >= 60 else None
+
+
 def market_is_healthy(index_data: dict[str, pd.DataFrame]) -> tuple[bool, str]:
     nifty = index_data.get("^NSEI")
     if nifty is None or nifty.empty:
@@ -368,8 +408,11 @@ def scan_symbol(ticker: str, df: pd.DataFrame, settings: ScanSettings, allow_lon
     wave_ok = (not settings.use_elliott_filter) or (
         wave["bias"] == "Bullish" and int(wave["score"]) >= settings.min_wave_score
     )
+    weekly_wave = timeframe_wave(to_weekly(df))
+    mtf_aligned = wave["bias"] == "Bullish" and weekly_wave["bias"] == "Bullish"
+    mtf_ok = (not settings.use_mtf_wave) or mtf_aligned
     week = weekly_trend(df, settings)
-    gates = allow_long and trend_ok and wave_ok and week["ok"]
+    gates = allow_long and trend_ok and wave_ok and mtf_ok and week["ok"]
 
     volume_ok = vol20 > 0 and volume >= 1.25 * vol20
     breakout = gates and close > high20_prev and volume_ok and rsi >= 55
@@ -409,6 +452,7 @@ def scan_symbol(ticker: str, df: pd.DataFrame, settings: ScanSettings, allow_lon
     score += 15 if close > ma_fast > ema50 else 5
     score += min(20, int(wave["score"] * 0.2))
     score += 10 if week["label"] == "Weekly up" else 0
+    score += 10 if mtf_aligned else 0
     score = min(score, 100)
 
     return {
@@ -427,6 +471,9 @@ def scan_symbol(ticker: str, df: pd.DataFrame, settings: ScanSettings, allow_lon
         "Wave Bias": wave["bias"],
         "Wave Stage": wave["stage"],
         "Wave Score": int(wave["score"]),
+        "Weekly Wave": weekly_wave["bias"],
+        "Hourly Wave": "—",
+        "MTF Align": "Yes" if mtf_aligned else "No",
         "RSI 14": round(rsi, 1),
         "Reward/Risk": rr,
         "Volume x20": round(volume / vol20, 2) if vol20 else np.nan,
@@ -443,6 +490,9 @@ def run_scan(tickers: list[str], settings: ScanSettings) -> tuple[pd.DataFrame, 
     for ticker, df in all_data.items():
         signal = scan_symbol(ticker, df, settings, allow_long or ticker in INDICES.values())
         if signal:
+            if settings.use_hourly_wave:
+                intraday = fetch_intraday(ticker)
+                signal["Hourly Wave"] = timeframe_wave(intraday)["bias"] if intraday is not None else "n/a"
             rows.append(signal)
 
     signals = pd.DataFrame(rows)
@@ -456,7 +506,7 @@ st.set_page_config(page_title="Nifty Strategy Scanner", page_icon="📈", layout
 st.title("Nifty Strategy Scanner")
 st.caption(
     "Moving-average pullback + 20-day breakout scanner for Nifty 100, Nifty 50, and Bank Nifty, "
-    "with weekly trend confirmation."
+    "with weekly trend confirmation and multi-timeframe Elliott Wave alignment."
 )
 
 with st.sidebar:
@@ -474,6 +524,11 @@ with st.sidebar:
     weekly_ma_length = st.number_input(
         "Weekly MA length", min_value=5, max_value=40, value=20, step=1, disabled=not use_weekly_filter
     )
+    st.divider()
+
+    st.caption("Multi-timeframe Elliott Wave")
+    use_mtf_wave = st.checkbox("Require weekly + daily wave to align", value=True)
+    use_hourly_wave = st.checkbox("Also check hourly wave (slower, candidates only)", value=False)
     st.divider()
 
     use_elliott_filter = st.checkbox("Use Elliott Wave filter", value=True)
@@ -509,6 +564,8 @@ settings = ScanSettings(
     ma_length=int(ma_length),
     use_weekly_filter=bool(use_weekly_filter),
     weekly_ma_length=int(weekly_ma_length),
+    use_mtf_wave=bool(use_mtf_wave),
+    use_hourly_wave=bool(use_hourly_wave),
 )
 
 left, right = st.columns([2, 1])
