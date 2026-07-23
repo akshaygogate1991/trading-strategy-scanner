@@ -121,6 +121,7 @@ class ScanSettings:
     weekly_ma_length: int = 20
     use_mtf_wave: bool = True
     use_hourly_wave: bool = False
+    data_source: str = "Auto"
 
 
 def normalize_tickers(raw: Iterable[str]) -> list[str]:
@@ -155,6 +156,31 @@ def fetch_market_data(tickers: tuple[str, ...], period: str) -> dict[str, pd.Dat
         if len(frame) >= 80:
             data[ticker] = frame
     return data
+
+
+@st.cache_data(ttl=60 * 20, show_spinner=False)
+def fetch_angelone(tickers: tuple[str, ...], period: str) -> dict[str, pd.DataFrame]:
+    """Exact NSE candles via Angel One SmartAPI (data only, never trades).
+
+    Requires smartapi_data.py + credentials in .streamlit/secrets.toml.
+    Raises if unavailable; callers fall back to Yahoo.
+    """
+    import smartapi_data as sd
+
+    return sd.fetch_market_data(tickers, period)
+
+
+def get_market_data(tickers: tuple[str, ...], settings: ScanSettings) -> tuple[dict[str, pd.DataFrame], str]:
+    """Fetch candles from the chosen source, falling back Angel One -> Yahoo."""
+    if settings.data_source in ("Auto", "Angel One"):
+        try:
+            data = fetch_angelone(tickers, settings.data_period)
+            if data:
+                return data, "Angel One (exact NSE)"
+        except Exception:
+            if settings.data_source == "Angel One":
+                st.warning("Angel One data unavailable (check credentials/IP); using Yahoo instead.")
+    return fetch_market_data(tickers, settings.data_period), "Yahoo Finance"
 
 
 def moving_average(series: pd.Series, length: int, ma_type: str) -> pd.Series:
@@ -367,9 +393,17 @@ def timeframe_wave(df: pd.DataFrame | None) -> dict:
 def fetch_intraday(ticker: str, interval: str = "60m", period: str = "60d") -> pd.DataFrame | None:
     """Intraday candles for the hourly wave check.
 
-    Uses yfinance today. To get exact NSE data, swap this for an Angel One
-    SmartAPI call (free historical candles) once an API key is configured.
+    Tries Angel One SmartAPI first (exact NSE hourly candles) when credentials
+    are configured, then falls back to yfinance.
     """
+    try:
+        import smartapi_data as sd
+
+        frame = sd.get_history(ticker, "1h", 120)
+        if frame is not None and len(frame) >= 60:
+            return frame
+    except Exception:
+        pass
     try:
         frame = yf.download(
             ticker, period=period, interval=interval,
@@ -496,10 +530,11 @@ def scan_symbol(ticker: str, df: pd.DataFrame, settings: ScanSettings, allow_lon
 
 def run_scan(tickers: list[str], settings: ScanSettings) -> tuple[pd.DataFrame, str]:
     index_tickers = tuple(INDICES.values())
-    index_data = fetch_market_data(index_tickers, settings.data_period)
+    index_data, _ = get_market_data(index_tickers, settings)
     allow_long, market_message = market_is_healthy(index_data)
 
-    all_data = fetch_market_data(tuple(tickers), settings.data_period)
+    all_data, source_used = get_market_data(tuple(tickers), settings)
+    market_message = f"{market_message}  |  Data source: {source_used}"
     rows = []
     for ticker, df in all_data.items():
         signal = scan_symbol(ticker, df, settings, allow_long or ticker in INDICES.values())
@@ -529,6 +564,13 @@ with st.sidebar:
     risk_percent = st.slider("Risk per trade (%)", min_value=0.25, max_value=2.0, value=1.0, step=0.25)
     min_rr = st.slider("Minimum reward:risk", min_value=1.5, max_value=3.0, value=2.0, step=0.25)
     data_period = st.selectbox("History", ["6mo", "1y", "2y"], index=2)
+    data_source = st.selectbox(
+        "Data source",
+        ["Auto", "Angel One", "Yahoo"],
+        index=0,
+        help="Auto tries Angel One SmartAPI (exact NSE data, needs credentials in "
+        "secrets.toml) and falls back to Yahoo Finance. Data only — never places orders.",
+    )
 
     st.divider()
     st.caption("Trend engine")
@@ -580,6 +622,7 @@ settings = ScanSettings(
     weekly_ma_length=int(weekly_ma_length),
     use_mtf_wave=bool(use_mtf_wave),
     use_hourly_wave=bool(use_hourly_wave),
+    data_source=str(data_source),
 )
 
 left, right = st.columns([2, 1])
