@@ -100,6 +100,43 @@ def get_market_data(tickers: tuple[str, ...]) -> tuple[dict[str, pd.DataFrame], 
     return fetch_yahoo(tickers, DATA_PERIOD), "Yahoo Finance"
 
 
+@st.cache_data(ttl=60 * 30, show_spinner=False)
+def fetch_fii_dii() -> dict | None:
+    """Latest FII/DII cash-market net flows (Rs. crore) from NSE's public API.
+
+    Works best from a home/residential connection; NSE blocks many server IPs.
+    Returns None on failure - the UI then falls back to a manual checkbox.
+    """
+    import requests
+
+    headers = {
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.nseindia.com/",
+    }
+    try:
+        session = requests.Session()
+        session.get("https://www.nseindia.com", headers=headers, timeout=10)
+        resp = session.get("https://www.nseindia.com/api/fiidiiTradeReact",
+                           headers=headers, timeout=10)
+        rows = resp.json()
+        out = {"date": ""}
+        for row in rows:
+            cat = str(row.get("category", "")).upper()
+            net = float(str(row.get("netValue", "0")).replace(",", ""))
+            if "FII" in cat or "FPI" in cat:
+                out["fii_net"] = net
+                out["date"] = row.get("date", "")
+            elif "DII" in cat:
+                out["dii_net"] = net
+        if "fii_net" in out and "dii_net" in out:
+            return out
+    except Exception:
+        pass
+    return None
+
+
 @st.cache_data(ttl=60 * 20, show_spinner=False)
 def fetch_vix() -> float | None:
     try:
@@ -369,20 +406,26 @@ if vix is not None:
 else:
     st.warning("India VIX unavailable right now - judge premium cost manually.")
 
-st.markdown("**Your manual checks** (tick what you've verified today):")
-c1, c2, c3 = st.columns(3)
-with c1:
-    fii_ok = st.checkbox("FII/DII flows supportive")
-with c2:
-    sentiment_ok = st.checkbox("Market sentiment supportive")
-with c3:
-    buddy_ok = st.checkbox("NiftyBuddy conviction agrees")
-manual_score = sum([fii_ok, sentiment_ok, buddy_ok])
+fii = fetch_fii_dii()
+if fii:
+    total_flow = fii["fii_net"] + fii["dii_net"]
+    st.info(
+        f"Institutional flows ({fii['date']}): FII net ₹{fii['fii_net']:+,.0f} Cr, "
+        f"DII net ₹{fii['dii_net']:+,.0f} Cr → combined **₹{total_flow:+,.0f} Cr** "
+        f"({'buying' if total_flow > 0 else 'selling'})"
+    )
+    fii_manual = None
+else:
+    st.warning("FII/DII data unreachable right now (NSE blocks some connections) - "
+               "check moneycontrol.com and tick manually below.")
+    fii_manual = st.checkbox("FII/DII flows supportive (verified manually)")
+
+buddy_ok = st.checkbox("NiftyBuddy conviction agrees (check x.com/niftybuddy)")
 st.caption(
-    "These ticks do NOT change which suggestions appear — signals come purely from "
-    "price data (18 EMA + Elliott + RSI + VIX). The app cannot see FII/DII numbers, "
-    "news sentiment, or NiftyBuddy's posts, so you verify those yourself and tick. "
-    "Together they complete the conviction score (3 automatic + 3 yours = /6)."
+    "Conviction is 6 checks per suggestion: 18 EMA trend, Elliott Wave, VIX, "
+    "FII/DII flow direction, and Nifty market alignment are AUTOMATIC; "
+    "NiftyBuddy's view only you can judge - read him, then tick. "
+    "Ticking never changes which suggestions appear, only the conviction score."
 )
 
 if st.button("Scan Market", type="primary", use_container_width=True) or True:
@@ -438,9 +481,28 @@ if st.button("Scan Market", type="primary", use_container_width=True) or True:
                     )
     else:
         st.success(f"{len(suggestions)} suggestion(s) found")
+        # Nifty's own state, used as the market-alignment check for every card
+        nifty_trend, nifty_wave = "flat", "Neutral"
+        if "^NSEI" in data:
+            nd = add_indicators(data["^NSEI"])
+            nifty_trend = trend_18ema(nd)
+            nifty_wave = elliott_directional(nd)["bias"]
+
         for s in suggestions[:6]:
             arrow = "🟢 BUY CALL" if s["direction"] == "CALL" else "🔴 BUY PUT"
-            auto_score = 2 + (1 if s["vix_ok"] else 0)
+
+            if s["direction"] == "CALL":
+                align_ok = nifty_trend != "down" and nifty_wave != "Bearish"
+            else:
+                align_ok = nifty_trend != "up" and nifty_wave != "Bullish"
+
+            if fii:
+                flow = fii["fii_net"] + fii["dii_net"]
+                flows_ok = flow > 0 if s["direction"] == "CALL" else flow < 0
+            else:
+                flows_ok = bool(fii_manual)
+
+            auto_score = 2 + sum([s["vix_ok"], flows_ok, align_ok])
             with st.container(border=True):
                 st.subheader(f"{arrow} - {s['name']}  {s['strike']:g} "
                              f"{'CE' if s['direction'] == 'CALL' else 'PE'} (nearest monthly expiry)")
@@ -465,17 +527,19 @@ if st.button("Scan Market", type="primary", use_container_width=True) or True:
                     f"🛡️ *Optional hedge:* also **SELL {s['hedge_strike']:g} {opt}** to make it a "
                     f"spread — cuts cost and max loss roughly 40%, in exchange for a capped profit."
                 )
-                if manual_score < 3:
-                    st.warning("Complete your manual checks above before acting on this.", icon="☑️")
                 checks = [
-                    "18 EMA trend aligned ✓",
-                    "Elliott Wave aligned ✓",
-                    ("VIX acceptable ✓" if s["vix_ok"] else "VIX high ✗"),
-                    (f"Your manual checks: {manual_score}/3 "
-                     + ("✓" if manual_score == 3 else "— tick above")),
+                    "18 EMA ✓",
+                    "Elliott ✓",
+                    ("VIX ✓" if s["vix_ok"] else "VIX high ✗"),
+                    ("FII/DII ✓" if flows_ok else "FII/DII against ✗"),
+                    ("Nifty aligned ✓" if align_ok else "Nifty against ✗"),
+                    ("NiftyBuddy ✓" if buddy_ok else "NiftyBuddy — tick above"),
                 ]
-                st.caption("Conviction: " + "  |  ".join(checks)
-                           + f"  →  {auto_score + manual_score}/6")
+                conviction = auto_score + (1 if buddy_ok else 0)
+                st.caption("Conviction: " + "  |  ".join(checks) + f"  →  **{conviction}/6**")
+                if conviction < 5:
+                    st.warning("Below 5/6 conviction — consider skipping or paper-trading this one.",
+                               icon="⚖️")
         st.caption(
             "Premiums are estimates from spot and VIX - ALWAYS check the live premium and "
             "lot size on your broker before deciding. Risk per trade = the premium you pay; "
