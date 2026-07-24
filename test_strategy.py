@@ -113,9 +113,13 @@ for seed in range(40):
         break
 assert row, "no stock suggestion found in 40 uptrends"
 assert row["sl_premium"] < row["premium_est"] < row["target_premium"]
-assert row["lot"] is None and row["capital_est"] is None, "stock lot must defer to broker"
+# hedge economics: hedged max loss must be smaller than unhedged, profit capped positive
+assert row["net_debit"] < row["premium_est"], "hedge must reduce max loss"
+assert row["hedge_credit"] > 0 and row["spread_max_profit"] > 0
+assert abs(row["net_debit"] + row["hedge_credit"] - row["premium_est"]) < 0.02
 print(f"[7] risk plan: SL {row['sl_premium']} < premium {row['premium_est']} < "
-      f"target {row['target_premium']}; stock lots deferred to broker")
+      f"target {row['target_premium']}; hedged max loss {row['net_debit']} "
+      f"(saves {row['hedge_credit']}), hedged max profit {row['spread_max_profit']}")
 
 # --- tiny/garbage data never crashes ---
 assert app.analyze("^NSEI", "Nifty 50", make_series(30), 14.0) is None

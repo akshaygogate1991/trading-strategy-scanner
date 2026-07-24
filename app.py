@@ -115,23 +115,52 @@ def fetch_fii_dii() -> dict | None:
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": "https://www.nseindia.com/",
     }
+    def _parse(payload) -> dict | None:
+        """Defensive parse: walk any JSON shape for FII/DII rows with a net value."""
+        out = {"date": ""}
+        stack = [payload]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                cat = str(node.get("category") or node.get("fii_dii_category") or "").upper()
+                net = node.get("netValue") or node.get("net_value") or node.get("net")
+                if net is not None and cat:
+                    try:
+                        val = float(str(net).replace(",", ""))
+                    except ValueError:
+                        val = None
+                    if val is not None:
+                        if "FII" in cat or "FPI" in cat:
+                            out["fii_net"] = val
+                            out["date"] = str(node.get("date") or node.get("trade_date") or "")
+                        elif "DII" in cat:
+                            out["dii_net"] = val
+                stack.extend(node.values())
+            elif isinstance(node, list):
+                stack.extend(node)
+        return out if "fii_net" in out and "dii_net" in out else None
+
+    # Source 1: NSE's own API (best from home connections; blocks many servers)
     try:
         session = requests.Session()
-        session.get("https://www.nseindia.com", headers=headers, timeout=10)
+        session.get("https://www.nseindia.com", headers=headers, timeout=8)
         resp = session.get("https://www.nseindia.com/api/fiidiiTradeReact",
-                           headers=headers, timeout=10)
-        rows = resp.json()
-        out = {"date": ""}
-        for row in rows:
-            cat = str(row.get("category", "")).upper()
-            net = float(str(row.get("netValue", "0")).replace(",", ""))
-            if "FII" in cat or "FPI" in cat:
-                out["fii_net"] = net
-                out["date"] = row.get("date", "")
-            elif "DII" in cat:
-                out["dii_net"] = net
-        if "fii_net" in out and "dii_net" in out:
-            return out
+                           headers=headers, timeout=8)
+        parsed = _parse(resp.json())
+        if parsed:
+            return parsed
+    except Exception:
+        pass
+
+    # Source 2: niftytrader public web API (often reachable from cloud servers)
+    try:
+        resp = requests.get(
+            "https://webapi.niftytrader.in/webapi/Resource/fii-dii-activity-data",
+            headers=headers, timeout=8,
+        )
+        parsed = _parse(resp.json())
+        if parsed:
+            return parsed
     except Exception:
         pass
     return None
@@ -333,7 +362,13 @@ def analyze(ticker: str, name: str, df: pd.DataFrame, vix: float | None) -> dict
 
     # optional hedge: sell a further-out option -> debit spread (lower cost & max loss)
     step = strike_step(close, ticker)
-    hedge_strike = strike + 2 * step if direction == "CALL" else strike - 2 * step
+    dist = close * (0.02 if not is_stock else 0.03)  # ~2% OTM indices, ~3% stocks
+    n_steps = max(2, round(dist / step))
+    hedge_strike = strike + n_steps * step if direction == "CALL" else strike - n_steps * step
+    width = n_steps * step
+    hedge_credit = round(0.4 * premium, 2)       # modeled OTM premium (~40% of ATM)
+    net_debit = round(premium - hedge_credit, 2)  # hedged cost = hedged max loss
+    spread_max_profit = round(width - net_debit, 2)
 
     vix_ok = vix is not None and vix < 20
 
@@ -355,6 +390,9 @@ def analyze(ticker: str, name: str, df: pd.DataFrame, vix: float | None) -> dict
         "underlying_exit": round(ema, 2),
         "vix_ok": vix_ok,
         "hedge_strike": hedge_strike,
+        "hedge_credit": hedge_credit,
+        "net_debit": net_debit,
+        "spread_max_profit": spread_max_profit,
     }
 
 
@@ -420,12 +458,10 @@ else:
                "check moneycontrol.com and tick manually below.")
     fii_manual = st.checkbox("FII/DII flows supportive (verified manually)")
 
-buddy_ok = st.checkbox("NiftyBuddy conviction agrees (check x.com/niftybuddy)")
 st.caption(
-    "Conviction is 6 checks per suggestion: 18 EMA trend, Elliott Wave, VIX, "
-    "FII/DII flow direction, and Nifty market alignment are AUTOMATIC; "
-    "NiftyBuddy's view only you can judge - read him, then tick. "
-    "Ticking never changes which suggestions appear, only the conviction score."
+    "Conviction is 5 automatic checks per suggestion: 18 EMA trend, Elliott Wave, "
+    "VIX level, FII/DII flow direction, and Nifty market alignment. "
+    "All computed from data - nothing to tick."
 )
 
 if st.button("Scan Market", type="primary", use_container_width=True) or True:
@@ -523,9 +559,24 @@ if st.button("Scan Market", type="primary", use_container_width=True) or True:
                     f"the 18 EMA (~{s['underlying_exit']:,.2f})."
                 )
                 opt = "CE" if s["direction"] == "CALL" else "PE"
-                st.write(
-                    f"🛡️ *Optional hedge:* also **SELL {s['hedge_strike']:g} {opt}** to make it a "
-                    f"spread — cuts cost and max loss roughly 40%, in exchange for a capped profit."
+                lot = s["lot"]
+                per_lot = (lambda x: f" (₹{x * lot:,.0f}/lot)") if lot else (lambda x: "")
+                st.markdown(
+                    f"**🛡️ Hedged version (optional):** also SELL **{s['hedge_strike']:g} {opt}** "
+                    f"for ~₹{s['hedge_credit']:,.0f} credit → net cost ₹{s['net_debit']:,.0f}/share"
+                    f"{per_lot(s['net_debit'])}.\n\n"
+                    f"- Max LOSS hedged: **₹{s['net_debit']:,.0f}/share**{per_lot(s['net_debit'])} "
+                    f"vs ₹{s['premium_est']:,.0f} unhedged → risk cut ~"
+                    f"{round(100 * s['hedge_credit'] / s['premium_est'])}%\n"
+                    f"- Max PROFIT hedged: capped at **₹{s['spread_max_profit']:,.0f}/share**"
+                    f"{per_lot(s['spread_max_profit'])} — no matter how far the move goes\n"
+                    f"- The hedge does NOT profit when you're wrong — it only makes the loss smaller."
+                )
+                st.caption(
+                    f"Risk reality: the -{SL_PCT}% stop plans to lose only "
+                    f"₹{round(s['premium_est'] * SL_PCT / 100):,.0f}/share, but if price gaps past it "
+                    f"your true max loss is the full premium (₹{s['premium_est']:,.0f} unhedged, "
+                    f"₹{s['net_debit']:,.0f} hedged)."
                 )
                 checks = [
                     "18 EMA ✓",
@@ -533,12 +584,10 @@ if st.button("Scan Market", type="primary", use_container_width=True) or True:
                     ("VIX ✓" if s["vix_ok"] else "VIX high ✗"),
                     ("FII/DII ✓" if flows_ok else "FII/DII against ✗"),
                     ("Nifty aligned ✓" if align_ok else "Nifty against ✗"),
-                    ("NiftyBuddy ✓" if buddy_ok else "NiftyBuddy — tick above"),
                 ]
-                conviction = auto_score + (1 if buddy_ok else 0)
-                st.caption("Conviction: " + "  |  ".join(checks) + f"  →  **{conviction}/6**")
-                if conviction < 5:
-                    st.warning("Below 5/6 conviction — consider skipping or paper-trading this one.",
+                st.caption("Conviction: " + "  |  ".join(checks) + f"  →  **{auto_score}/5**")
+                if auto_score < 4:
+                    st.warning("Below 4/5 conviction — consider skipping or paper-trading this one.",
                                icon="⚖️")
         st.caption(
             "Premiums are estimates from spot and VIX - ALWAYS check the live premium and "
