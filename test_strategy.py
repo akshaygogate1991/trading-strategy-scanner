@@ -117,6 +117,9 @@ assert row["sl_premium"] < row["premium_est"] < row["target_premium"]
 assert row["net_debit"] < row["premium_est"], "hedge must reduce max loss"
 assert row["hedge_credit"] > 0 and row["spread_max_profit"] > 0
 assert abs(row["net_debit"] + row["hedge_credit"] - row["premium_est"]) < 0.02
+# breakeven must sit between the two strikes (CALL: strike < BE < hedge strike)
+lo, hi = sorted([row["strike"], row["hedge_strike"]])
+assert lo < row["hedged_breakeven"] < hi, "breakeven must lie between the strikes"
 print(f"[7] risk plan: SL {row['sl_premium']} < premium {row['premium_est']} < "
       f"target {row['target_premium']}; hedged max loss {row['net_debit']} "
       f"(saves {row['hedge_credit']}), hedged max profit {row['spread_max_profit']}")

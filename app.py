@@ -369,6 +369,8 @@ def analyze(ticker: str, name: str, df: pd.DataFrame, vix: float | None) -> dict
     hedge_credit = round(0.4 * premium, 2)       # modeled OTM premium (~40% of ATM)
     net_debit = round(premium - hedge_credit, 2)  # hedged cost = hedged max loss
     spread_max_profit = round(width - net_debit, 2)
+    # at expiry: below/above this underlying level the hedged trade flips loss<->profit
+    hedged_breakeven = round(strike + net_debit if direction == "CALL" else strike - net_debit, 2)
 
     vix_ok = vix is not None and vix < 20
 
@@ -393,6 +395,7 @@ def analyze(ticker: str, name: str, df: pd.DataFrame, vix: float | None) -> dict
         "hedge_credit": hedge_credit,
         "net_debit": net_debit,
         "spread_max_profit": spread_max_profit,
+        "hedged_breakeven": hedged_breakeven,
     }
 
 
@@ -572,6 +575,25 @@ if st.button("Scan Market", type="primary", use_container_width=True) or True:
                     f"{per_lot(s['spread_max_profit'])} — no matter how far the move goes\n"
                     f"- The hedge does NOT profit when you're wrong — it only makes the loss smaller."
                 )
+                if s["direction"] == "CALL":
+                    ladder = (
+                        f"**📍 Hedged trade map** ({s['name']} share price at expiry):\n"
+                        f"- Below **{s['strike']:g}** → MAX LOSS ₹{s['net_debit']:,.0f}/share{per_lot(s['net_debit'])}\n"
+                        f"- At **{s['hedged_breakeven']:,.2f}** → no profit, no loss (breakeven)\n"
+                        f"- Above {s['hedged_breakeven']:,.2f} → profit grows\n"
+                        f"- At/above **{s['hedge_strike']:g}** → MAX PROFIT ₹{s['spread_max_profit']:,.0f}/share"
+                        f"{per_lot(s['spread_max_profit'])} (fixed — hedged)"
+                    )
+                else:
+                    ladder = (
+                        f"**📍 Hedged trade map** ({s['name']} share price at expiry):\n"
+                        f"- Above **{s['strike']:g}** → MAX LOSS ₹{s['net_debit']:,.0f}/share{per_lot(s['net_debit'])}\n"
+                        f"- At **{s['hedged_breakeven']:,.2f}** → no profit, no loss (breakeven)\n"
+                        f"- Below {s['hedged_breakeven']:,.2f} → profit grows\n"
+                        f"- At/below **{s['hedge_strike']:g}** → MAX PROFIT ₹{s['spread_max_profit']:,.0f}/share"
+                        f"{per_lot(s['spread_max_profit'])} (fixed — hedged)"
+                    )
+                st.markdown(ladder)
                 st.caption(
                     f"Risk reality: the -{SL_PCT}% stop plans to lose only "
                     f"₹{round(s['premium_est'] * SL_PCT / 100):,.0f}/share, but if price gaps past it "
