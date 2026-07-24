@@ -41,8 +41,23 @@ FO_STOCKS = [
     "VEDL.NS",
 ]
 
-# Index lot sizes (verify with your broker; SEBI revises these periodically)
+# Fallback lot sizes if the NSE instrument master is unreachable.
+# Lot sizes are set by NSE (identical at every broker); NSE revises them periodically.
 LOT_SIZES = {"^NSEI": 75, "^NSEBANK": 35}
+
+
+@st.cache_data(ttl=60 * 60 * 12, show_spinner=False)
+def resolve_lot(ticker: str) -> int | None:
+    """Exact NSE lot size via the Angel One instrument master, with fallback."""
+    try:
+        import smartapi_data as sd
+
+        lot = sd.get_lot_size(ticker)
+        if lot:
+            return lot
+    except Exception:
+        pass
+    return LOT_SIZES.get(ticker)
 
 DATA_PERIOD = "1y"
 SL_PCT = 40      # stop-loss: exit if premium falls 40%
@@ -276,8 +291,12 @@ def analyze(ticker: str, name: str, df: pd.DataFrame, vix: float | None) -> dict
     is_stock = ticker not in LOT_SIZES
     strike = nearest_strike(close, ticker)
     premium = premium_estimate(close, vix, is_stock)
-    lot = LOT_SIZES.get(ticker)
+    lot = resolve_lot(ticker)
     capital = round(premium * lot, 0) if lot else None
+
+    # optional hedge: sell a further-out option -> debit spread (lower cost & max loss)
+    step = strike_step(close, ticker)
+    hedge_strike = strike + 2 * step if direction == "CALL" else strike - 2 * step
 
     vix_ok = vix is not None and vix < 20
 
@@ -298,6 +317,35 @@ def analyze(ticker: str, name: str, df: pd.DataFrame, vix: float | None) -> dict
         "target_premium": round(premium * (1 + TARGET_PCT / 100), 2),
         "underlying_exit": round(ema, 2),
         "vix_ok": vix_ok,
+        "hedge_strike": hedge_strike,
+    }
+
+
+def condor_idea(ticker: str, name: str, df: pd.DataFrame, vix: float | None) -> dict | None:
+    """Hedged range idea (iron condor) for an index with NO directional signal.
+
+    Info-only: the one structure with a (small) positive edge in our 2-year
+    backtest, and only in range markets. Defined risk on both sides.
+    """
+    if ticker not in ("^NSEI", "^NSEBANK"):
+        return None
+    df = add_indicators(df)
+    if trend_18ema(df) != "flat":
+        return None
+    close = float(df.iloc[-1]["Close"])
+    step = strike_step(close, ticker)
+
+    def snap(x: float) -> float:
+        return round(round(x / step) * step, 2)
+
+    return {
+        "name": name,
+        "spot": round(close, 2),
+        "sell_call": snap(close * 1.015),
+        "buy_call": snap(close * 1.030),
+        "sell_put": snap(close * 0.985),
+        "buy_put": snap(close * 0.970),
+        "lot": resolve_lot(ticker),
     }
 
 
@@ -330,6 +378,12 @@ with c2:
 with c3:
     buddy_ok = st.checkbox("NiftyBuddy conviction agrees")
 manual_score = sum([fii_ok, sentiment_ok, buddy_ok])
+st.caption(
+    "These ticks do NOT change which suggestions appear — signals come purely from "
+    "price data (18 EMA + Elliott + RSI + VIX). The app cannot see FII/DII numbers, "
+    "news sentiment, or NiftyBuddy's posts, so you verify those yourself and tick. "
+    "Together they complete the conviction score (3 automatic + 3 yours = /6)."
+)
 
 if st.button("Scan Market", type="primary", use_container_width=True) or True:
     tickers = list(INDICES.values()) + FO_STOCKS
@@ -351,8 +405,8 @@ if st.button("Scan Market", type="primary", use_container_width=True) or True:
 
     if not suggestions:
         st.warning(
-            "No trade right now. 18 EMA trend and Elliott Wave do not agree on any "
-            "instrument - staying out IS the strategy protecting your capital."
+            "No directional trade right now. 18 EMA trend and Elliott Wave do not agree "
+            "on any instrument - staying out IS the strategy protecting your capital."
         )
         with st.expander("Market picture (indices)"):
             for label, tk in INDICES.items():
@@ -361,6 +415,27 @@ if st.button("Scan Market", type="primary", use_container_width=True) or True:
                     st.write(f"**{label}**: close {float(d.iloc[-1]['Close']):,.0f}, "
                              f"18 EMA trend = {trend_18ema(d)}, "
                              f"wave = {elliott_directional(d)['bias']}")
+        # hedged range idea - only structure with a (small) positive edge in our backtest
+        for label, tk in INDICES.items():
+            if tk not in data:
+                continue
+            idea = condor_idea(tk, label, data[tk], vix)
+            if idea:
+                with st.container(border=True):
+                    st.subheader(f"🛡️ Range market - hedged idea: {idea['name']} Iron Condor")
+                    st.write(
+                        f"Spot {idea['spot']:,.0f}. SELL {idea['sell_call']:g} CE + "
+                        f"SELL {idea['sell_put']:g} PE, and BUY {idea['buy_call']:g} CE + "
+                        f"BUY {idea['buy_put']:g} PE as protection (nearest monthly expiry"
+                        + (f", lot {idea['lot']}" if idea["lot"] else "") + ")."
+                    )
+                    st.write(
+                        "Profits if the index stays between the sold strikes till expiry; "
+                        "losses capped by the bought wings on both sides. In our 2-year "
+                        "backtest this was the only structure with a small positive edge, "
+                        "and only in range markets - paper-trade it first, and get exact "
+                        "premiums from your broker's option chain."
+                    )
     else:
         st.success(f"{len(suggestions)} suggestion(s) found")
         for s in suggestions[:6]:
@@ -385,6 +460,13 @@ if st.button("Scan Market", type="primary", use_container_width=True) or True:
                     f"Also exit if {'close falls below' if s['direction'] == 'CALL' else 'close rises above'} "
                     f"the 18 EMA (~{s['underlying_exit']:,.2f})."
                 )
+                opt = "CE" if s["direction"] == "CALL" else "PE"
+                st.write(
+                    f"🛡️ *Optional hedge:* also **SELL {s['hedge_strike']:g} {opt}** to make it a "
+                    f"spread — cuts cost and max loss roughly 40%, in exchange for a capped profit."
+                )
+                if manual_score < 3:
+                    st.warning("Complete your manual checks above before acting on this.", icon="☑️")
                 checks = [
                     "18 EMA trend aligned ✓",
                     "Elliott Wave aligned ✓",

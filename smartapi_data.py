@@ -170,6 +170,47 @@ def get_history(ticker: str, interval: str = "1d", days: int = 400) -> pd.DataFr
     return df[["Open", "High", "Low", "Close", "Volume"]].astype(float)
 
 
+_master_failed = False
+
+
+def get_lot_size(ticker: str) -> int | None:
+    """Official NSE lot size from the instrument master (same at every broker).
+
+    Looks up the F&O contract for the symbol and reads its lotsize field.
+    Returns None if the master is unreachable or the symbol has no F&O.
+    """
+    global _master_failed
+    if _master_failed:
+        return None
+    try:
+        master = _instrument_master()
+    except Exception:
+        _master_failed = True  # don't retry on every call
+        return None
+
+    if ticker == "^NSEI":
+        names = {"NIFTY"}
+    elif ticker == "^NSEBANK":
+        names = {"BANKNIFTY"}
+    else:
+        names = {ticker.replace(".NS", "").upper()}
+
+    for row in master:
+        if row.get("exch_seg") != "NFO":
+            continue
+        if row.get("name", "").upper() not in names:
+            continue
+        if row.get("instrumenttype") not in ("OPTSTK", "FUTSTK", "OPTIDX", "FUTIDX"):
+            continue
+        try:
+            lot = int(float(row.get("lotsize", 0)))
+        except (TypeError, ValueError):
+            continue
+        if lot > 0:
+            return lot
+    return None
+
+
 _PERIOD_DAYS = {"6mo": 190, "1y": 380, "2y": 740}
 
 
