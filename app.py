@@ -432,12 +432,23 @@ def market_is_healthy(index_data: dict[str, pd.DataFrame]) -> tuple[bool, str]:
     return False, "Market filter weak: Nifty trend is not supportive for fresh long trades."
 
 
-def scan_symbol(ticker: str, df: pd.DataFrame, settings: ScanSettings, allow_long: bool) -> dict | None:
+def scan_symbol(
+    ticker: str,
+    df: pd.DataFrame,
+    settings: ScanSettings,
+    allow_long: bool,
+    diagnostics: dict | None = None,
+) -> dict | None:
+    def _mark(stage: str) -> None:
+        if diagnostics is not None:
+            diagnostics[stage] = diagnostics.get(stage, 0) + 1
+
     df = add_indicators(df, settings.ma_type, settings.ma_length)
     latest = df.iloc[-1]
     previous = df.iloc[-2]
 
     if any(pd.isna(latest[col]) for col in ["ma_fast", "ema50", "rsi14", "atr14", "high20_prev"]):
+        _mark("Not enough history for indicators")
         return None
 
     close = float(latest["Close"])
@@ -470,6 +481,23 @@ def scan_symbol(ticker: str, df: pd.DataFrame, settings: ScanSettings, allow_lon
     pullback = gates and touched_ma and reclaimed_strength
 
     if not breakout and not pullback:
+        # record the FIRST gate that blocked this symbol, for the diagnostics panel
+        if not allow_long:
+            _mark("Blocked by market filter (Nifty weak)")
+        elif not trend_ok:
+            _mark("Daily trend not bullish (below/flat 50 EMA)")
+        elif not week["ok"]:
+            _mark("Weekly trend filter rejected")
+        elif not wave_ok:
+            _mark("Daily Elliott Wave not bullish enough")
+        elif not mtf_ok:
+            _mark("Weekly wave not aligned with daily")
+        else:
+            _mark("Trend OK but no entry trigger yet")
+            if diagnostics is not None:
+                diagnostics.setdefault("watchlist", []).append(
+                    f"{ticker} (close {close:.1f}, RSI {rsi:.0f}, wave {wave['score']})"
+                )
         return None
 
     setup = "20-day breakout" if breakout else f"{settings.ma_length} {settings.ma_type} pullback"
@@ -482,6 +510,7 @@ def scan_symbol(ticker: str, df: pd.DataFrame, settings: ScanSettings, allow_lon
         stop_loss = round(close - atr, 2)
     risk_per_share = round(entry - stop_loss, 2)
     if risk_per_share <= 0:
+        _mark("Stop-loss placement invalid")
         return None
 
     target_1 = round(entry + (1.5 * risk_per_share), 2)
@@ -489,6 +518,7 @@ def scan_symbol(ticker: str, df: pd.DataFrame, settings: ScanSettings, allow_lon
     target_3 = round(entry + (3.0 * risk_per_share), 2)
     rr = round((target_2 - entry) / risk_per_share, 2)
     if rr < settings.min_rr:
+        _mark("Setup found but reward:risk below minimum")
         return None
 
     risk_amount = settings.capital * settings.risk_percent / 100
@@ -528,26 +558,40 @@ def scan_symbol(ticker: str, df: pd.DataFrame, settings: ScanSettings, allow_lon
     }
 
 
-def run_scan(tickers: list[str], settings: ScanSettings) -> tuple[pd.DataFrame, str]:
+def run_scan(tickers: list[str], settings: ScanSettings) -> tuple[pd.DataFrame, str, dict]:
     index_tickers = tuple(INDICES.values())
     index_data, _ = get_market_data(index_tickers, settings)
     allow_long, market_message = market_is_healthy(index_data)
 
     all_data, source_used = get_market_data(tuple(tickers), settings)
     market_message = f"{market_message}  |  Data source: {source_used}"
+
+    diagnostics: dict = {}
+    diagnostics["Symbols requested"] = len(tickers)
+    diagnostics["No data returned"] = len(tickers) - len(all_data)
+
+    progress = st.progress(0.0, text="Analyzing charts...")
     rows = []
-    for ticker, df in all_data.items():
-        signal = scan_symbol(ticker, df, settings, allow_long or ticker in INDICES.values())
+    total = max(len(all_data), 1)
+    for pos, (ticker, df) in enumerate(all_data.items(), start=1):
+        progress.progress(
+            pos / total,
+            text=f"Analyzing {ticker} — daily + weekly (+4H) — {pos}/{total}",
+        )
+        signal = scan_symbol(
+            ticker, df, settings, allow_long or ticker in INDICES.values(), diagnostics
+        )
         if signal:
             if settings.use_hourly_wave:
                 four_h = to_4h(fetch_intraday(ticker))
                 signal["4H Wave"] = timeframe_wave(four_h)["bias"] if len(four_h) else "n/a"
             rows.append(signal)
+    progress.empty()
 
     signals = pd.DataFrame(rows)
     if not signals.empty:
         signals = signals.sort_values(["Score", "Reward/Risk"], ascending=False).reset_index(drop=True)
-    return signals, market_message
+    return signals, market_message, diagnostics
 
 
 st.set_page_config(page_title="Nifty Strategy Scanner", page_icon="📈", layout="wide")
@@ -634,10 +678,21 @@ with right:
 manual_scan = st.button("Scan Market", type="primary", use_container_width=True)
 
 if auto_scan or manual_scan:
-    with st.spinner(f"Scanning {len(tickers)} charts..."):
-        signals, market_message = run_scan(tickers, settings)
+    n_frames = 3 if use_hourly_wave else 2
+    with st.spinner(f"Scanning {len(tickers)} symbols x {n_frames} timeframes "
+                    f"(~{len(tickers) * n_frames} chart reads)..."):
+        signals, market_message, diagnostics = run_scan(tickers, settings)
 
     st.info(market_message)
+
+    with st.expander("Scan diagnostics — why symbols were accepted or rejected", expanded=signals.empty):
+        watchlist = diagnostics.pop("watchlist", [])
+        for stage, count in diagnostics.items():
+            st.write(f"- **{stage}:** {count}")
+        st.write(f"- **Signals produced:** {len(signals)}")
+        if watchlist:
+            st.markdown("**Watchlist — trend healthy, waiting for an entry trigger:**")
+            st.write(", ".join(watchlist))
     if signals.empty:
         st.warning("No trade available right now based on this strategy.")
     else:
