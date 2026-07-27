@@ -23,6 +23,8 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
+import trade_log as tl
+
 
 INDICES = {
     "Nifty 50": "^NSEI",
@@ -439,35 +441,38 @@ st.caption(
     "verify live premiums on your broker; this never places orders and is not financial advice."
 )
 
-vix = fetch_vix()
-if vix is not None:
-    vix_state = "calm - premiums reasonable" if vix < 14 else (
-        "normal" if vix < 20 else "elevated - premiums expensive, extra caution")
-    st.info(f"India VIX: **{vix:.1f}** ({vix_state})")
-else:
-    st.warning("India VIX unavailable right now - judge premium cost manually.")
+tab_suggest, tab_log = st.tabs(["📊 Suggestions", "📒 Trade Log"])
 
-fii = fetch_fii_dii()
-if fii:
-    total_flow = fii["fii_net"] + fii["dii_net"]
-    st.info(
-        f"Institutional flows ({fii['date']}): FII net ₹{fii['fii_net']:+,.0f} Cr, "
-        f"DII net ₹{fii['dii_net']:+,.0f} Cr → combined **₹{total_flow:+,.0f} Cr** "
-        f"({'buying' if total_flow > 0 else 'selling'})"
+with tab_suggest:
+    vix = fetch_vix()
+    if vix is not None:
+        vix_state = "calm - premiums reasonable" if vix < 14 else (
+            "normal" if vix < 20 else "elevated - premiums expensive, extra caution")
+        st.info(f"India VIX: **{vix:.1f}** ({vix_state})")
+    else:
+        st.warning("India VIX unavailable right now - judge premium cost manually.")
+
+    fii = fetch_fii_dii()
+    if fii:
+        total_flow = fii["fii_net"] + fii["dii_net"]
+        st.info(
+            f"Institutional flows ({fii['date']}): FII net ₹{fii['fii_net']:+,.0f} Cr, "
+            f"DII net ₹{fii['dii_net']:+,.0f} Cr → combined **₹{total_flow:+,.0f} Cr** "
+            f"({'buying' if total_flow > 0 else 'selling'})"
+        )
+        fii_manual = None
+    else:
+        st.warning("FII/DII data unreachable right now (NSE blocks some connections) - "
+                   "check moneycontrol.com and tick manually below.")
+        fii_manual = st.checkbox("FII/DII flows supportive (verified manually)")
+
+    st.caption(
+        "Conviction is 5 automatic checks per suggestion: 18 EMA trend, Elliott Wave, "
+        "VIX level, FII/DII flow direction, and Nifty market alignment. "
+        "All computed from data - nothing to tick. Note: market data is cached 20 min, "
+        "so a refresh within that window reuses the last fetch on purpose."
     )
-    fii_manual = None
-else:
-    st.warning("FII/DII data unreachable right now (NSE blocks some connections) - "
-               "check moneycontrol.com and tick manually below.")
-    fii_manual = st.checkbox("FII/DII flows supportive (verified manually)")
 
-st.caption(
-    "Conviction is 5 automatic checks per suggestion: 18 EMA trend, Elliott Wave, "
-    "VIX level, FII/DII flow direction, and Nifty market alignment. "
-    "All computed from data - nothing to tick."
-)
-
-if st.button("Scan Market", type="primary", use_container_width=True) or True:
     tickers = list(INDICES.values()) + FO_STOCKS
     names = {v: k for k, v in INDICES.items()}
 
@@ -527,7 +532,7 @@ if st.button("Scan Market", type="primary", use_container_width=True) or True:
             nifty_trend = trend_18ema(nd)
             nifty_wave = elliott_directional(nd)["bias"]
 
-        for s in suggestions[:6]:
+        for i, s in enumerate(suggestions[:6]):
             arrow = "🟢 BUY CALL" if s["direction"] == "CALL" else "🔴 BUY PUT"
 
             if s["direction"] == "CALL":
@@ -611,8 +616,126 @@ if st.button("Scan Market", type="primary", use_container_width=True) or True:
                 if auto_score < 4:
                     st.warning("Below 4/5 conviction — consider skipping or paper-trading this one.",
                                icon="⚖️")
+
+                log_col1, log_col2 = st.columns([1, 2])
+                with log_col1:
+                    take_hedge = st.checkbox("Log the hedged version", key=f"hedge_{i}_{s['ticker']}")
+                with log_col2:
+                    if st.button("📝 Log this trade", key=f"log_{i}_{s['ticker']}",
+                                use_container_width=True):
+                        entry_premium = s["net_debit"] if take_hedge else s["premium_est"]
+                        ok = tl.log_trade({
+                            "ticker": s["ticker"],
+                            "name": s["name"],
+                            "direction": s["direction"],
+                            "strike": s["strike"],
+                            "entry_premium": entry_premium,
+                            "lot": s["lot"],
+                            "conviction": auto_score,
+                            "hedged": bool(take_hedge),
+                            "hedge_strike": s["hedge_strike"] if take_hedge else None,
+                            "status": "OPEN",
+                        })
+                        if ok:
+                            st.toast(f"Logged {s['name']} {s['direction']} — see Trade Log tab.",
+                                     icon="✅")
+                        elif not tl.is_configured():
+                            st.error("Trade Log isn't set up yet — see the Trade Log tab for "
+                                    "one-time Supabase setup steps.")
+                        else:
+                            st.error("Could not save right now — try again in a moment.")
         st.caption(
             "Premiums are estimates from spot and VIX - ALWAYS check the live premium and "
             "lot size on your broker before deciding. Risk per trade = the premium you pay; "
             "planned exit at -40%, target +80% (2x reward). Never risk money you cannot lose."
         )
+
+with tab_log:
+    st.subheader("Paper-trading log")
+    if not tl.is_configured():
+        st.warning(
+            "Trade Log needs a free Supabase database to persist entries across app restarts "
+            "(the cloud app's own files don't survive a restart)."
+        )
+        st.markdown(
+            "**One-time setup (about 5 minutes):**\n\n"
+            "1. In your Supabase project, open the **SQL Editor** and run:\n"
+        )
+        st.code(
+            "create table trade_log (\n"
+            "    id uuid primary key default gen_random_uuid(),\n"
+            "    created_at timestamptz default now(),\n"
+            "    ticker text, name text, direction text, strike numeric,\n"
+            "    entry_premium numeric, lot integer, conviction integer,\n"
+            "    hedged boolean default false, hedge_strike numeric,\n"
+            "    status text default 'OPEN',\n"
+            "    exit_premium numeric, closed_at timestamptz,\n"
+            "    pnl_per_share numeric, pnl_total numeric\n"
+            ");\n"
+            "alter table trade_log enable row level security;\n"
+            "create policy \"personal use - allow all\" on trade_log\n"
+            "    for all using (true) with check (true);",
+            language="sql",
+        )
+        st.markdown(
+            "2. Go to **Settings -> API** in Supabase, copy the **Project URL** and the "
+            "**anon public key**.\n"
+            "3. Add them to your `.streamlit/secrets.toml` file (same file as your Angel One "
+            "credentials):"
+        )
+        st.code(
+            '[supabase]\nurl = "https://xxxxx.supabase.co"\nanon_key = "your-anon-key-here"',
+            language="toml",
+        )
+        st.markdown("4. Restart the app. This tab will then show your logged trades.")
+    else:
+        open_trades = tl.fetch_trades("OPEN")
+        closed_trades = tl.fetch_trades("CLOSED")
+
+        st.markdown(f"**Open positions ({len(open_trades)})**")
+        if not open_trades:
+            st.caption("Nothing logged yet — use \"📝 Log this trade\" on a suggestion card.")
+        for t in open_trades:
+            with st.container(border=True):
+                tag = "CE" if t["direction"] == "CALL" else "PE"
+                hedge_note = " (hedged spread)" if t.get("hedged") else ""
+                st.write(
+                    f"**{t['name']} {t['strike']:g} {tag}**{hedge_note} — "
+                    f"entry ₹{t['entry_premium']:,.2f}"
+                    + (f", lot {t['lot']}" if t.get("lot") else "")
+                    + f" — logged {str(t['created_at'])[:16].replace('T', ' ')}"
+                )
+                c1, c2 = st.columns([1, 1])
+                exit_val = c1.number_input(
+                    "Exit premium", min_value=0.0, step=0.5, key=f"exit_{t['id']}"
+                )
+                if c2.button("Close trade", key=f"close_{t['id']}", use_container_width=True):
+                    pnl_ps = round(exit_val - t["entry_premium"], 2)
+                    pnl_tot = round(pnl_ps * t["lot"], 2) if t.get("lot") else None
+                    if tl.close_trade(t["id"], exit_val, pnl_ps, pnl_tot):
+                        st.toast(f"Closed — P&L ₹{pnl_ps:+,.2f}/share", icon="✅")
+                        st.rerun()
+                    else:
+                        st.error("Could not close — try again.")
+                if st.button("🗑️ Delete (logged by mistake)", key=f"del_{t['id']}"):
+                    if tl.delete_trade(t["id"]):
+                        st.rerun()
+
+        st.markdown("---")
+        st.markdown(f"**Closed trades ({len(closed_trades)})**")
+        if closed_trades:
+            df = pd.DataFrame(closed_trades)[
+                ["created_at", "name", "direction", "strike", "entry_premium",
+                 "exit_premium", "pnl_per_share", "pnl_total", "conviction"]
+            ]
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+            wins = sum(1 for t in closed_trades if (t.get("pnl_per_share") or 0) > 0)
+            total_pnl = sum(t.get("pnl_total") or 0 for t in closed_trades)
+            avg_pnl_ps = sum(t.get("pnl_per_share") or 0 for t in closed_trades) / len(closed_trades)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Win rate", f"{100 * wins / len(closed_trades):.0f}%")
+            c2.metric("Total P&L", f"₹{total_pnl:+,.0f}")
+            c3.metric("Avg P&L/share", f"₹{avg_pnl_ps:+.2f}")
+        else:
+            st.caption("No closed trades yet.")
