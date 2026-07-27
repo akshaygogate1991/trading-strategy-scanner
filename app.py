@@ -641,7 +641,7 @@ with tab_suggest:
                                      icon="✅")
                         elif not tl.is_configured():
                             st.error("Trade Log isn't set up yet — see the Trade Log tab for "
-                                    "one-time Supabase setup steps.")
+                                    "one-time GitHub setup steps.")
                         else:
                             st.error("Could not save right now — try again in a moment.")
         st.caption(
