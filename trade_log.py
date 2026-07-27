@@ -1,54 +1,55 @@
-"""Paper-trading log, persisted in Supabase (Postgres + REST API).
+"""Paper-trading log, persisted as a JSON file in a private GitHub repo.
 
-Why Supabase: the live app runs on Streamlit Community Cloud, whose local
-filesystem is wiped on restart/redeploy - a plain CSV would lose your log.
-Supabase is a small hosted Postgres database with a free tier and a simple
-REST API (PostgREST), so entries survive restarts.
+Why GitHub instead of a database: it's free forever, needs no new signup
+(you already have a GitHub account), and a private repo keeps your P&L
+history out of public view - unlike committing it to the public scanner repo.
 
-Credentials read from st.secrets["supabase"]: url, anon_key.
-If not configured, every function here degrades gracefully (returns False/[])
-so the app still runs - the Trade Log tab just explains what to set up.
+Setup (one-time, ~5 minutes):
+  1. On github.com, create a NEW repo, e.g. "trading-journal-data".
+     Set its visibility to PRIVATE. Do not put this file in your public
+     trading-strategy-scanner repo - that one is public.
+  2. Create a GitHub Personal Access Token:
+     github.com -> Settings -> Developer settings -> Personal access tokens
+     -> Fine-grained tokens -> Generate new token.
+     Repository access: "Only select repositories" -> pick the new private repo.
+     Permissions: Repository -> Contents -> Read and write.
+  3. Add to .streamlit/secrets.toml (and to Streamlit Cloud's Secrets manager,
+     since that's what your live app actually reads):
 
-Table schema (run once in the Supabase SQL editor):
+        [github_log]
+        token = "github_pat_xxx..."
+        repo  = "yourusername/trading-journal-data"
 
-    create table trade_log (
-        id uuid primary key default gen_random_uuid(),
-        created_at timestamptz default now(),
-        ticker text,
-        name text,
-        direction text,          -- CALL or PUT
-        strike numeric,
-        entry_premium numeric,
-        lot integer,
-        conviction integer,
-        hedged boolean default false,
-        hedge_strike numeric,
-        status text default 'OPEN',   -- OPEN or CLOSED
-        exit_premium numeric,
-        closed_at timestamptz,
-        pnl_per_share numeric,
-        pnl_total numeric
-    );
-    alter table trade_log enable row level security;
-    create policy "personal use - allow all" on trade_log
-        for all using (true) with check (true);
+Credentials read from st.secrets["github_log"]: token, repo, and optionally
+path (default "trade_log.json") and branch (default "main").
+
+Every log/close/delete action reads the current file, edits it, and writes
+it back as one commit - simple and safe for a single user.
 """
 from __future__ import annotations
 
+import base64
+import json
+import uuid
 from datetime import datetime, timezone
 
 import requests
 import streamlit as st
 
-TABLE = "trade_log"
+API = "https://api.github.com"
 
 
-def _config() -> tuple[str, str] | None:
+def _config() -> dict | None:
     try:
-        s = st.secrets["supabase"]
-        url, key = s.get("url"), s.get("anon_key")
-        if url and key:
-            return url.rstrip("/"), key
+        s = st.secrets["github_log"]
+        token, repo = s.get("token"), s.get("repo")
+        if token and repo:
+            return {
+                "token": token,
+                "repo": repo,
+                "path": s.get("path", "trade_log.json"),
+                "branch": s.get("branch", "main"),
+            }
     except Exception:
         pass
     return None
@@ -58,13 +59,38 @@ def is_configured() -> bool:
     return _config() is not None
 
 
-def _headers(key: str, prefer: str = "return=representation") -> dict:
+def _headers(token: str) -> dict:
     return {
-        "apikey": key,
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-        "Prefer": prefer,
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
     }
+
+
+def _get_file(cfg: dict) -> tuple[list, str | None]:
+    """Return (trades, sha). sha is None if the file doesn't exist yet."""
+    url = f"{API}/repos/{cfg['repo']}/contents/{cfg['path']}"
+    resp = requests.get(url, headers=_headers(cfg["token"]),
+                        params={"ref": cfg["branch"]}, timeout=10)
+    if resp.status_code == 404:
+        return [], None
+    resp.raise_for_status()
+    data = resp.json()
+    content = base64.b64decode(data["content"]).decode("utf-8")
+    trades = json.loads(content).get("trades", []) if content.strip() else []
+    return trades, data["sha"]
+
+
+def _put_file(cfg: dict, trades: list, sha: str | None, message: str) -> bool:
+    url = f"{API}/repos/{cfg['repo']}/contents/{cfg['path']}"
+    body = base64.b64encode(
+        json.dumps({"trades": trades}, indent=2).encode("utf-8")
+    ).decode("ascii")
+    payload = {"message": message, "content": body, "branch": cfg["branch"]}
+    if sha:
+        payload["sha"] = sha
+    resp = requests.put(url, headers=_headers(cfg["token"]), json=payload, timeout=10)
+    return resp.status_code in (200, 201)
 
 
 def log_trade(row: dict) -> bool:
@@ -72,11 +98,13 @@ def log_trade(row: dict) -> bool:
     cfg = _config()
     if not cfg:
         return False
-    url, key = cfg
     try:
-        resp = requests.post(f"{url}/rest/v1/{TABLE}", headers=_headers(key),
-                             json=row, timeout=10)
-        return resp.status_code in (200, 201)
+        trades, sha = _get_file(cfg)
+        row = dict(row)
+        row["id"] = str(uuid.uuid4())
+        row["created_at"] = datetime.now(timezone.utc).isoformat()
+        trades.append(row)
+        return _put_file(cfg, trades, sha, f"Log trade: {row.get('name')} {row.get('direction')}")
     except Exception:
         return False
 
@@ -86,18 +114,13 @@ def fetch_trades(status: str | None = None) -> list[dict]:
     cfg = _config()
     if not cfg:
         return []
-    url, key = cfg
-    params = {"select": "*", "order": "created_at.desc"}
-    if status:
-        params["status"] = f"eq.{status}"
     try:
-        resp = requests.get(f"{url}/rest/v1/{TABLE}", headers=_headers(key),
-                            params=params, timeout=10)
-        if resp.status_code == 200:
-            return resp.json()
+        trades, _ = _get_file(cfg)
     except Exception:
-        pass
-    return []
+        return []
+    if status:
+        trades = [t for t in trades if t.get("status") == status]
+    return sorted(trades, key=lambda t: t.get("created_at", ""), reverse=True)
 
 
 def close_trade(trade_id: str, exit_premium: float, pnl_per_share: float,
@@ -106,20 +129,21 @@ def close_trade(trade_id: str, exit_premium: float, pnl_per_share: float,
     cfg = _config()
     if not cfg:
         return False
-    url, key = cfg
-    payload = {
-        "status": "CLOSED",
-        "exit_premium": exit_premium,
-        "pnl_per_share": pnl_per_share,
-        "pnl_total": pnl_total,
-        "closed_at": datetime.now(timezone.utc).isoformat(),
-    }
     try:
-        resp = requests.patch(
-            f"{url}/rest/v1/{TABLE}", headers=_headers(key, "return=minimal"),
-            params={"id": f"eq.{trade_id}"}, json=payload, timeout=10,
-        )
-        return resp.status_code in (200, 204)
+        trades, sha = _get_file(cfg)
+        found = False
+        for t in trades:
+            if t.get("id") == trade_id:
+                t["status"] = "CLOSED"
+                t["exit_premium"] = exit_premium
+                t["pnl_per_share"] = pnl_per_share
+                t["pnl_total"] = pnl_total
+                t["closed_at"] = datetime.now(timezone.utc).isoformat()
+                found = True
+                break
+        if not found:
+            return False
+        return _put_file(cfg, trades, sha, f"Close trade {trade_id[:8]}")
     except Exception:
         return False
 
@@ -129,12 +153,11 @@ def delete_trade(trade_id: str) -> bool:
     cfg = _config()
     if not cfg:
         return False
-    url, key = cfg
     try:
-        resp = requests.delete(
-            f"{url}/rest/v1/{TABLE}", headers=_headers(key, "return=minimal"),
-            params={"id": f"eq.{trade_id}"}, timeout=10,
-        )
-        return resp.status_code in (200, 204)
+        trades, sha = _get_file(cfg)
+        new_trades = [t for t in trades if t.get("id") != trade_id]
+        if len(new_trades) == len(trades):
+            return False
+        return _put_file(cfg, new_trades, sha, f"Delete trade {trade_id[:8]}")
     except Exception:
         return False

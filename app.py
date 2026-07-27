@@ -654,40 +654,27 @@ with tab_log:
     st.subheader("Paper-trading log")
     if not tl.is_configured():
         st.warning(
-            "Trade Log needs a free Supabase database to persist entries across app restarts "
-            "(the cloud app's own files don't survive a restart)."
+            "Trade Log needs a place to store entries so they survive app restarts. "
+            "It uses a private GitHub repo (free, no new signup needed) - NOT your public "
+            "trading-strategy-scanner repo, so your P&L history stays private."
         )
         st.markdown(
             "**One-time setup (about 5 minutes):**\n\n"
-            "1. In your Supabase project, open the **SQL Editor** and run:\n"
+            "1. On github.com, create a **new repository**, e.g. `trading-journal-data`. "
+            "Set visibility to **Private**.\n"
+            "2. Go to GitHub **Settings -> Developer settings -> Personal access tokens -> "
+            "Fine-grained tokens -> Generate new token**. Under Repository access, choose "
+            "\"Only select repositories\" and pick the new private repo. Under Permissions, "
+            "set **Contents: Read and write**.\n"
+            "3. Add the token to your `.streamlit/secrets.toml` (same file as Angel One) "
+            "AND to Streamlit Cloud's Secrets manager (your app -> Settings -> Secrets), "
+            "since that's what the live app reads:"
         )
         st.code(
-            "create table trade_log (\n"
-            "    id uuid primary key default gen_random_uuid(),\n"
-            "    created_at timestamptz default now(),\n"
-            "    ticker text, name text, direction text, strike numeric,\n"
-            "    entry_premium numeric, lot integer, conviction integer,\n"
-            "    hedged boolean default false, hedge_strike numeric,\n"
-            "    status text default 'OPEN',\n"
-            "    exit_premium numeric, closed_at timestamptz,\n"
-            "    pnl_per_share numeric, pnl_total numeric\n"
-            ");\n"
-            "alter table trade_log enable row level security;\n"
-            "create policy \"personal use - allow all\" on trade_log\n"
-            "    for all using (true) with check (true);",
-            language="sql",
-        )
-        st.markdown(
-            "2. Go to **Settings -> API** in Supabase, copy the **Project URL** and the "
-            "**anon public key**.\n"
-            "3. Add them to your `.streamlit/secrets.toml` file (same file as your Angel One "
-            "credentials):"
-        )
-        st.code(
-            '[supabase]\nurl = "https://xxxxx.supabase.co"\nanon_key = "your-anon-key-here"',
+            '[github_log]\ntoken = "github_pat_xxxxx"\nrepo  = "yourusername/trading-journal-data"',
             language="toml",
         )
-        st.markdown("4. Restart the app. This tab will then show your logged trades.")
+        st.markdown("4. Reload this page. This tab will then show your logged trades.")
     else:
         open_trades = tl.fetch_trades("OPEN")
         closed_trades = tl.fetch_trades("CLOSED")
