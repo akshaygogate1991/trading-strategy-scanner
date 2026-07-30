@@ -338,12 +338,17 @@ def premium_estimate(spot: float, vix: float | None, is_stock: bool, days: int =
 
 
 def build_plan(strike: float, premium: float, ticker: str, direction: str,
-              close: float, is_stock: bool) -> dict:
-    """Stop-loss, target, and optional-hedge economics for a given strike+premium.
+              close: float, is_stock: bool, lot: int | None = None) -> dict:
+    """Stop-loss, target, capital, and optional-hedge economics for a strike+premium.
 
     Pure function of (strike, premium) so it gives identical, consistent numbers
     whether fed the formula ESTIMATE or a REAL live premium fetched from the
     broker - only the inputs differ, the math is the same.
+
+    capital_est MUST be computed here rather than by the caller: it depends on
+    the premium, so leaving it outside meant a live premium updated the stop,
+    target and hedge numbers while the displayed capital silently kept the old
+    estimate - understating what the trade actually costs.
     """
     step = strike_step(close, ticker)
     dist = close * (0.02 if not is_stock else 0.03)  # ~2% OTM indices, ~3% stocks
@@ -359,6 +364,7 @@ def build_plan(strike: float, premium: float, ticker: str, direction: str,
     return {
         "sl_premium": round(premium * (1 - SL_PCT / 100), 2),
         "target_premium": round(premium * (1 + TARGET_PCT / 100), 2),
+        "capital_est": round(premium * lot, 0) if lot else None,
         "hedge_strike": hedge_strike,
         "hedge_credit": hedge_credit,
         "net_debit": net_debit,
@@ -423,9 +429,8 @@ def analyze(ticker: str, name: str, df: pd.DataFrame, vix: float | None) -> dict
     strike = nearest_strike(close, ticker)
     premium = premium_estimate(close, vix, is_stock)
     lot = resolve_lot(ticker)
-    capital = round(premium * lot, 0) if lot else None
 
-    plan = build_plan(strike, premium, ticker, direction, close, is_stock)
+    plan = build_plan(strike, premium, ticker, direction, close, is_stock, lot)
     vix_ok = vix is not None and vix < 20
 
     return {
@@ -440,7 +445,6 @@ def analyze(ticker: str, name: str, df: pd.DataFrame, vix: float | None) -> dict
         "wave_score": int(wave["score"]),
         "premium_est": premium,
         "lot": lot,
-        "capital_est": capital,
         "underlying_exit": round(ema, 2),
         "vix_ok": vix_ok,
         **plan,
@@ -619,13 +623,13 @@ with tab_suggest:
                     disp["premium_est"] = real["premium"]
                     disp.update(build_plan(
                         real["strike"], real["premium"], s["ticker"], s["direction"],
-                        s["close"], s["ticker"] not in LOT_SIZES,
+                        s["close"], s["ticker"] not in LOT_SIZES, s["lot"],
                     ))
                 else:
                     # exact expiry known, but no live quote right now
                     disp.update(build_plan(
                         real["strike"], s["premium_est"], s["ticker"], s["direction"],
-                        s["close"], s["ticker"] not in LOT_SIZES,
+                        s["close"], s["ticker"] not in LOT_SIZES, s["lot"],
                     ))
 
             with st.container(border=True):
@@ -735,9 +739,12 @@ with tab_suggest:
                         else:
                             st.error("Could not save right now — try again in a moment.")
         st.caption(
-            "Premiums are estimates from spot and VIX - ALWAYS check the live premium and "
-            "lot size on your broker before deciding. Risk per trade = the premium you pay; "
-            "planned exit at -40%, target +80% (2x reward). Never risk money you cannot lose."
+            "Cards marked \"Live premium\" are real Angel One quotes; any marked "
+            "\"Est. premium\" are formula estimates and can be far off - check those on "
+            "your broker's option chain before deciding. A live quote is still a last-traded "
+            "price, so confirm the bid/ask spread before entering. Risk per trade = the "
+            "premium you pay; planned exit at -40%, target +80% (2x reward). "
+            "Never risk money you cannot lose."
         )
 
 with tab_log:

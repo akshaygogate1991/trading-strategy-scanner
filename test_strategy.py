@@ -159,13 +159,30 @@ print(f"[17] real_option_info: full live path -> premium={r['premium']}, expiry=
 sd.resolve_option, sd.get_ltp = _orig_resolve, _orig_ltp  # restore
 
 # --- build_plan is consistent whether fed the estimate or a real premium ---
-plan_est = app.build_plan(1675.0, 33.0, "TECHM.NS", "CALL", 1669.0, True)
-plan_real = app.build_plan(1675.0, 42.5, "TECHM.NS", "CALL", 1669.0, True)
+plan_est = app.build_plan(1675.0, 33.0, "TECHM.NS", "CALL", 1669.0, True, 600)
+plan_real = app.build_plan(1675.0, 42.5, "TECHM.NS", "CALL", 1669.0, True, 600)
 for p, premium in ((plan_est, 33.0), (plan_real, 42.5)):
     assert p["sl_premium"] < premium < p["target_premium"]
     assert p["net_debit"] < premium
     assert p["hedge_strike"] > 1675.0  # OTM further out for a CALL hedge
 print(f"[18] build_plan consistent for estimate ({plan_est['sl_premium']}-{plan_est['target_premium']}) "
       f"and real premium ({plan_real['sl_premium']}-{plan_real['target_premium']})")
+
+# --- capital MUST track the premium actually shown (regression: it did not) ---
+assert plan_est["capital_est"] == 33.0 * 600, "capital must match the estimate premium"
+assert plan_real["capital_est"] == 42.5 * 600, "capital must be RECOMPUTED for a live premium"
+assert plan_real["capital_est"] > plan_est["capital_est"], "richer premium => more capital"
+assert app.build_plan(1675.0, 42.5, "TECHM.NS", "CALL", 1669.0, True, None)["capital_est"] is None
+# and end-to-end: the row analyze() returns must be internally consistent
+_row = None
+for seed in range(40):
+    _row = app.analyze("RELIANCE.NS", "RELIANCE", make_series(trend=0.0025, seed=seed), 15.0)
+    if _row:
+        break
+if _row and _row["lot"]:
+    assert _row["capital_est"] == round(_row["premium_est"] * _row["lot"], 0), \
+        "analyze(): capital_est must equal premium x lot"
+print(f"[19] capital tracks premium: Rs.{plan_est['capital_est']:,.0f} at premium 33 -> "
+      f"Rs.{plan_real['capital_est']:,.0f} at premium 42.5 (no lot -> None)")
 
 print("\nAll checks passed.")
