@@ -4,3 +4,12 @@ pandas>=2.2
 numpy>=1.26
 requests>=2.28
 
+# Angel One live market data (spot candles + real option premiums).
+# logzero and websocket-client are runtime imports of smartapi-python that it
+# does NOT declare itself - without them `from SmartApi import SmartConnect`
+# raises ModuleNotFoundError, so they must be listed explicitly.
+smartapi-python>=1.5
+pyotp>=2.9
+logzero>=1.7
+websocket-client>=1.6
+
