@@ -147,7 +147,9 @@ sd.resolve_option = lambda ticker, opt, target: {
 sd.get_ltp = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no session"))
 r = app.real_option_info("TECHM.NS", "CALL", 1675)
 assert r is not None and r["premium"] is None and r["strike"] == 1675.0
-print(f"[16] real_option_info: expiry resolved without login ({r['expiry']}), premium None (needs login)")
+assert r["premium_error"] == "no session", "real error message must be captured for diagnosis"
+print(f"[16] real_option_info: expiry resolved without login ({r['expiry']}), "
+      f"premium None (needs login), error captured: '{r['premium_error']}'")
 
 sd.get_ltp = lambda *a, **k: 42.5
 r = app.real_option_info("TECHM.NS", "CALL", 1675)

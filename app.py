@@ -386,14 +386,16 @@ def real_option_info(ticker: str, direction: str, target_strike: float) -> dict 
     if not resolved:
         return None
     premium = None
+    premium_error = None
     try:
         premium = sd.get_ltp("NFO", resolved["tradingsymbol"], resolved["token"])
-    except Exception:
-        premium = None
+    except Exception as exc:
+        premium_error = str(exc)
     return {
         "strike": resolved["strike"],
         "expiry": resolved["expiry"],
         "premium": premium,
+        "premium_error": premium_error,
         "tradingsymbol": resolved["tradingsymbol"],
     }
 
@@ -644,6 +646,8 @@ with tab_suggest:
                         "always check the real premium on your broker's option chain "
                         "before deciding."
                     )
+                    if real and real.get("premium_error"):
+                        st.caption(f"Live quote failed: {real['premium_error']}")
                 st.write(
                     f"Spot **{disp['close']:,.2f}** vs 18 EMA **{disp['ema18']:,.2f}**  |  "
                     f"RSI {disp['rsi']}  |  Elliott: *{disp['wave_stage']}* (score {disp['wave_score']})"

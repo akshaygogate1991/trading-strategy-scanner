@@ -285,16 +285,20 @@ def resolve_option(ticker: str, option_type: str, target_strike: float) -> dict 
 
 
 def get_ltp(exchange: str, tradingsymbol: str, token: str) -> float | None:
-    """Live last-traded-price for one option contract. Requires an active session."""
+    """Live last-traded-price for one option contract. Requires an active session.
+
+    Raises on any failure (login, network, bad response) instead of swallowing
+    the error, so the caller can capture and surface the exact reason a live
+    quote wasn't available - much easier to diagnose than a silent fallback.
+    """
     client = _session()
-    try:
-        resp = client.ltpData(exchange, tradingsymbol, token)
-        if resp.get("status"):
-            ltp = float(resp["data"]["ltp"])
-            return ltp if ltp > 0 else None
-    except Exception:
-        pass
-    return None
+    resp = client.ltpData(exchange, tradingsymbol, token)
+    if not resp.get("status"):
+        raise RuntimeError(f"ltpData rejected: {resp.get('message', resp)}")
+    ltp = float(resp["data"]["ltp"])
+    if ltp <= 0:
+        raise RuntimeError(f"ltpData returned non-positive price: {ltp}")
+    return ltp
 
 
 _PERIOD_DAYS = {"6mo": 190, "1y": 380, "2y": 740}
