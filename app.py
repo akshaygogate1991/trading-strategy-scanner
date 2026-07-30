@@ -478,11 +478,21 @@ def condor_idea(ticker: str, name: str, df: pd.DataFrame, vix: float | None) -> 
 st.set_page_config(page_title="Options Suggestion Scanner", page_icon="🎯",
                    layout="centered")
 
-st.title("Options Suggestion Scanner")
+title_col, refresh_col = st.columns([4, 1])
+with title_col:
+    st.title("Options Suggestion Scanner")
+with refresh_col:
+    st.write("")  # vertical spacer to align the button with the title
+    if st.button("🔄 Refresh now", use_container_width=True,
+                help="Clears the cache and re-fetches spot prices, VIX, FII/DII, and premiums immediately."):
+        st.cache_data.clear()
+        st.rerun()
+
 st.caption(
     "18 EMA trend + Elliott Wave agreement, both directions. Bullish alignment -> CALL idea, "
-    "bearish alignment -> PUT idea. No alignment -> no trade. Decision support only - "
-    "verify live premiums on your broker; this never places orders and is not financial advice."
+    "bearish alignment -> PUT idea. No alignment -> no trade. Data auto-refreshes every 20 min, "
+    "or click Refresh now for this instant. Decision support only - verify live premiums on your "
+    "broker; this never places orders and is not financial advice."
 )
 
 tab_suggest, tab_log = st.tabs(["📊 Suggestions", "📒 Trade Log"])
