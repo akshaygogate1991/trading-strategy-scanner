@@ -337,6 +337,67 @@ def premium_estimate(spot: float, vix: float | None, is_stock: bool, days: int =
     return round(0.4 * spot * iv * math.sqrt(days / 365.0), 2)
 
 
+def build_plan(strike: float, premium: float, ticker: str, direction: str,
+              close: float, is_stock: bool) -> dict:
+    """Stop-loss, target, and optional-hedge economics for a given strike+premium.
+
+    Pure function of (strike, premium) so it gives identical, consistent numbers
+    whether fed the formula ESTIMATE or a REAL live premium fetched from the
+    broker - only the inputs differ, the math is the same.
+    """
+    step = strike_step(close, ticker)
+    dist = close * (0.02 if not is_stock else 0.03)  # ~2% OTM indices, ~3% stocks
+    n_steps = max(2, round(dist / step))
+    hedge_strike = strike + n_steps * step if direction == "CALL" else strike - n_steps * step
+    width = n_steps * step
+    hedge_credit = round(0.4 * premium, 2)
+    net_debit = round(premium - hedge_credit, 2)
+    spread_max_profit = round(width - net_debit, 2)
+    hedged_breakeven = round(
+        strike + net_debit if direction == "CALL" else strike - net_debit, 2
+    )
+    return {
+        "sl_premium": round(premium * (1 - SL_PCT / 100), 2),
+        "target_premium": round(premium * (1 + TARGET_PCT / 100), 2),
+        "hedge_strike": hedge_strike,
+        "hedge_credit": hedge_credit,
+        "net_debit": net_debit,
+        "spread_max_profit": spread_max_profit,
+        "hedged_breakeven": hedged_breakeven,
+    }
+
+
+def real_option_info(ticker: str, direction: str, target_strike: float) -> dict | None:
+    """Exact monthly expiry + live premium from Angel One, when available.
+
+    Expiry lookup needs no login (public instrument master); the live premium
+    needs an active SmartAPI session. Either can silently be unavailable -
+    callers must handle a None return, or partial data (expiry but no premium).
+    """
+    try:
+        import smartapi_data as sd
+    except Exception:
+        return None
+    opt_type = "CE" if direction == "CALL" else "PE"
+    try:
+        resolved = sd.resolve_option(ticker, opt_type, target_strike)
+    except Exception:
+        resolved = None
+    if not resolved:
+        return None
+    premium = None
+    try:
+        premium = sd.get_ltp("NFO", resolved["tradingsymbol"], resolved["token"])
+    except Exception:
+        premium = None
+    return {
+        "strike": resolved["strike"],
+        "expiry": resolved["expiry"],
+        "premium": premium,
+        "tradingsymbol": resolved["tradingsymbol"],
+    }
+
+
 def analyze(ticker: str, name: str, df: pd.DataFrame, vix: float | None) -> dict | None:
     df = add_indicators(df)
     trend = trend_18ema(df)
@@ -362,18 +423,7 @@ def analyze(ticker: str, name: str, df: pd.DataFrame, vix: float | None) -> dict
     lot = resolve_lot(ticker)
     capital = round(premium * lot, 0) if lot else None
 
-    # optional hedge: sell a further-out option -> debit spread (lower cost & max loss)
-    step = strike_step(close, ticker)
-    dist = close * (0.02 if not is_stock else 0.03)  # ~2% OTM indices, ~3% stocks
-    n_steps = max(2, round(dist / step))
-    hedge_strike = strike + n_steps * step if direction == "CALL" else strike - n_steps * step
-    width = n_steps * step
-    hedge_credit = round(0.4 * premium, 2)       # modeled OTM premium (~40% of ATM)
-    net_debit = round(premium - hedge_credit, 2)  # hedged cost = hedged max loss
-    spread_max_profit = round(width - net_debit, 2)
-    # at expiry: below/above this underlying level the hedged trade flips loss<->profit
-    hedged_breakeven = round(strike + net_debit if direction == "CALL" else strike - net_debit, 2)
-
+    plan = build_plan(strike, premium, ticker, direction, close, is_stock)
     vix_ok = vix is not None and vix < 20
 
     return {
@@ -389,15 +439,9 @@ def analyze(ticker: str, name: str, df: pd.DataFrame, vix: float | None) -> dict
         "premium_est": premium,
         "lot": lot,
         "capital_est": capital,
-        "sl_premium": round(premium * (1 - SL_PCT / 100), 2),
-        "target_premium": round(premium * (1 + TARGET_PCT / 100), 2),
         "underlying_exit": round(ema, 2),
         "vix_ok": vix_ok,
-        "hedge_strike": hedge_strike,
-        "hedge_credit": hedge_credit,
-        "net_debit": net_debit,
-        "spread_max_profit": spread_max_profit,
-        "hedged_breakeven": hedged_breakeven,
+        **plan,
     }
 
 
@@ -547,63 +591,95 @@ with tab_suggest:
                 flows_ok = bool(fii_manual)
 
             auto_score = 2 + sum([s["vix_ok"], flows_ok, align_ok])
+
+            # Try to replace estimates with the REAL listed contract: exact
+            # expiry (needs no login) and live premium (needs an Angel One
+            # session). Falls back to the formula estimate when unavailable.
+            real = real_option_info(s["ticker"], s["direction"], s["strike"])
+            disp = dict(s)
+            is_live_premium = False
+            expiry_label = "nearest monthly expiry — exact date needs Angel One"
+            if real:
+                expiry_label = real["expiry"].strftime("%d %b %Y") + " expiry"
+                disp["strike"] = real["strike"]
+                if real["premium"]:
+                    is_live_premium = True
+                    disp["premium_est"] = real["premium"]
+                    disp.update(build_plan(
+                        real["strike"], real["premium"], s["ticker"], s["direction"],
+                        s["close"], s["ticker"] not in LOT_SIZES,
+                    ))
+                else:
+                    # exact expiry known, but no live quote right now
+                    disp.update(build_plan(
+                        real["strike"], s["premium_est"], s["ticker"], s["direction"],
+                        s["close"], s["ticker"] not in LOT_SIZES,
+                    ))
+
             with st.container(border=True):
-                st.subheader(f"{arrow} - {s['name']}  {s['strike']:g} "
-                             f"{'CE' if s['direction'] == 'CALL' else 'PE'} (nearest monthly expiry)")
+                st.subheader(f"{arrow} - {disp['name']}  {disp['strike']:g} "
+                             f"{'CE' if disp['direction'] == 'CALL' else 'PE'} ({expiry_label})")
                 m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Est. premium", f"₹{s['premium_est']:,.0f}")
-                if s["capital_est"]:
-                    m2.metric(f"Capital / lot ({s['lot']})", f"₹{s['capital_est']:,.0f}")
+                m1.metric("Live premium" if is_live_premium else "Est. premium",
+                          f"₹{disp['premium_est']:,.0f}")
+                if disp["capital_est"]:
+                    m2.metric(f"Capital / lot ({disp['lot']})", f"₹{disp['capital_est']:,.0f}")
                 else:
                     m2.metric("Capital / lot", "check broker")
-                m3.metric(f"Stop-loss (-{SL_PCT}%)", f"₹{s['sl_premium']:,.0f}")
-                m4.metric(f"Target (+{TARGET_PCT}%)", f"₹{s['target_premium']:,.0f}")
+                m3.metric(f"Stop-loss (-{SL_PCT}%)", f"₹{disp['sl_premium']:,.0f}")
+                m4.metric(f"Target (+{TARGET_PCT}%)", f"₹{disp['target_premium']:,.0f}")
+                if not is_live_premium:
+                    st.caption(
+                        "⚠️ Premium is a formula estimate, not the live market price - "
+                        "always check the real premium on your broker's option chain "
+                        "before deciding."
+                    )
                 st.write(
-                    f"Spot **{s['close']:,.2f}** vs 18 EMA **{s['ema18']:,.2f}**  |  "
-                    f"RSI {s['rsi']}  |  Elliott: *{s['wave_stage']}* (score {s['wave_score']})"
+                    f"Spot **{disp['close']:,.2f}** vs 18 EMA **{disp['ema18']:,.2f}**  |  "
+                    f"RSI {disp['rsi']}  |  Elliott: *{disp['wave_stage']}* (score {disp['wave_score']})"
                 )
                 st.write(
-                    f"Also exit if {'close falls below' if s['direction'] == 'CALL' else 'close rises above'} "
-                    f"the 18 EMA (~{s['underlying_exit']:,.2f})."
+                    f"Also exit if {'close falls below' if disp['direction'] == 'CALL' else 'close rises above'} "
+                    f"the 18 EMA (~{disp['underlying_exit']:,.2f})."
                 )
-                opt = "CE" if s["direction"] == "CALL" else "PE"
-                lot = s["lot"]
+                opt = "CE" if disp["direction"] == "CALL" else "PE"
+                lot = disp["lot"]
                 per_lot = (lambda x: f" (₹{x * lot:,.0f}/lot)") if lot else (lambda x: "")
                 st.markdown(
-                    f"**🛡️ Hedged version (optional):** also SELL **{s['hedge_strike']:g} {opt}** "
-                    f"for ~₹{s['hedge_credit']:,.0f} credit → net cost ₹{s['net_debit']:,.0f}/share"
-                    f"{per_lot(s['net_debit'])}.\n\n"
-                    f"- Max LOSS hedged: **₹{s['net_debit']:,.0f}/share**{per_lot(s['net_debit'])} "
-                    f"vs ₹{s['premium_est']:,.0f} unhedged → risk cut ~"
-                    f"{round(100 * s['hedge_credit'] / s['premium_est'])}%\n"
-                    f"- Max PROFIT hedged: capped at **₹{s['spread_max_profit']:,.0f}/share**"
-                    f"{per_lot(s['spread_max_profit'])} — no matter how far the move goes\n"
+                    f"**🛡️ Hedged version (optional):** also SELL **{disp['hedge_strike']:g} {opt}** "
+                    f"for ~₹{disp['hedge_credit']:,.0f} credit → net cost ₹{disp['net_debit']:,.0f}/share"
+                    f"{per_lot(disp['net_debit'])}.\n\n"
+                    f"- Max LOSS hedged: **₹{disp['net_debit']:,.0f}/share**{per_lot(disp['net_debit'])} "
+                    f"vs ₹{disp['premium_est']:,.0f} unhedged → risk cut ~"
+                    f"{round(100 * disp['hedge_credit'] / disp['premium_est'])}%\n"
+                    f"- Max PROFIT hedged: capped at **₹{disp['spread_max_profit']:,.0f}/share**"
+                    f"{per_lot(disp['spread_max_profit'])} — no matter how far the move goes\n"
                     f"- The hedge does NOT profit when you're wrong — it only makes the loss smaller."
                 )
-                if s["direction"] == "CALL":
+                if disp["direction"] == "CALL":
                     ladder = (
-                        f"**📍 Hedged trade map** ({s['name']} share price at expiry):\n"
-                        f"- Below **{s['strike']:g}** → MAX LOSS ₹{s['net_debit']:,.0f}/share{per_lot(s['net_debit'])}\n"
-                        f"- At **{s['hedged_breakeven']:,.2f}** → no profit, no loss (breakeven)\n"
-                        f"- Above {s['hedged_breakeven']:,.2f} → profit grows\n"
-                        f"- At/above **{s['hedge_strike']:g}** → MAX PROFIT ₹{s['spread_max_profit']:,.0f}/share"
-                        f"{per_lot(s['spread_max_profit'])} (fixed — hedged)"
+                        f"**📍 Hedged trade map** ({disp['name']} share price at expiry):\n"
+                        f"- Below **{disp['strike']:g}** → MAX LOSS ₹{disp['net_debit']:,.0f}/share{per_lot(disp['net_debit'])}\n"
+                        f"- At **{disp['hedged_breakeven']:,.2f}** → no profit, no loss (breakeven)\n"
+                        f"- Above {disp['hedged_breakeven']:,.2f} → profit grows\n"
+                        f"- At/above **{disp['hedge_strike']:g}** → MAX PROFIT ₹{disp['spread_max_profit']:,.0f}/share"
+                        f"{per_lot(disp['spread_max_profit'])} (fixed — hedged)"
                     )
                 else:
                     ladder = (
-                        f"**📍 Hedged trade map** ({s['name']} share price at expiry):\n"
-                        f"- Above **{s['strike']:g}** → MAX LOSS ₹{s['net_debit']:,.0f}/share{per_lot(s['net_debit'])}\n"
-                        f"- At **{s['hedged_breakeven']:,.2f}** → no profit, no loss (breakeven)\n"
-                        f"- Below {s['hedged_breakeven']:,.2f} → profit grows\n"
-                        f"- At/below **{s['hedge_strike']:g}** → MAX PROFIT ₹{s['spread_max_profit']:,.0f}/share"
-                        f"{per_lot(s['spread_max_profit'])} (fixed — hedged)"
+                        f"**📍 Hedged trade map** ({disp['name']} share price at expiry):\n"
+                        f"- Above **{disp['strike']:g}** → MAX LOSS ₹{disp['net_debit']:,.0f}/share{per_lot(disp['net_debit'])}\n"
+                        f"- At **{disp['hedged_breakeven']:,.2f}** → no profit, no loss (breakeven)\n"
+                        f"- Below {disp['hedged_breakeven']:,.2f} → profit grows\n"
+                        f"- At/below **{disp['hedge_strike']:g}** → MAX PROFIT ₹{disp['spread_max_profit']:,.0f}/share"
+                        f"{per_lot(disp['spread_max_profit'])} (fixed — hedged)"
                     )
                 st.markdown(ladder)
                 st.caption(
                     f"Risk reality: the -{SL_PCT}% stop plans to lose only "
-                    f"₹{round(s['premium_est'] * SL_PCT / 100):,.0f}/share, but if price gaps past it "
-                    f"your true max loss is the full premium (₹{s['premium_est']:,.0f} unhedged, "
-                    f"₹{s['net_debit']:,.0f} hedged)."
+                    f"₹{round(disp['premium_est'] * SL_PCT / 100):,.0f}/share, but if price gaps past it "
+                    f"your true max loss is the full premium (₹{disp['premium_est']:,.0f} unhedged, "
+                    f"₹{disp['net_debit']:,.0f} hedged)."
                 )
                 checks = [
                     "18 EMA ✓",
@@ -623,21 +699,21 @@ with tab_suggest:
                 with log_col2:
                     if st.button("📝 Log this trade", key=f"log_{i}_{s['ticker']}",
                                 use_container_width=True):
-                        entry_premium = s["net_debit"] if take_hedge else s["premium_est"]
+                        entry_premium = disp["net_debit"] if take_hedge else disp["premium_est"]
                         ok = tl.log_trade({
-                            "ticker": s["ticker"],
-                            "name": s["name"],
-                            "direction": s["direction"],
-                            "strike": s["strike"],
+                            "ticker": disp["ticker"],
+                            "name": disp["name"],
+                            "direction": disp["direction"],
+                            "strike": disp["strike"],
                             "entry_premium": entry_premium,
-                            "lot": s["lot"],
+                            "lot": disp["lot"],
                             "conviction": auto_score,
                             "hedged": bool(take_hedge),
-                            "hedge_strike": s["hedge_strike"] if take_hedge else None,
+                            "hedge_strike": disp["hedge_strike"] if take_hedge else None,
                             "status": "OPEN",
                         })
                         if ok:
-                            st.toast(f"Logged {s['name']} {s['direction']} — see Trade Log tab.",
+                            st.toast(f"Logged {disp['name']} {disp['direction']} — see Trade Log tab.",
                                      icon="✅")
                         elif not tl.is_configured():
                             st.error("Trade Log isn't set up yet — see the Trade Log tab for "

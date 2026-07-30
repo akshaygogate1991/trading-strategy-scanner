@@ -211,6 +211,92 @@ def get_lot_size(ticker: str) -> int | None:
     return None
 
 
+def _parse_expiry(expiry_str: str) -> _dt.date | None:
+    """Angel One's expiry field looks like '28JUL2026'."""
+    try:
+        return _dt.datetime.strptime(expiry_str, "%d%b%Y").date()
+    except (ValueError, TypeError):
+        return None
+
+
+def resolve_option(ticker: str, option_type: str, target_strike: float) -> dict | None:
+    """Find the nearest MONTHLY option contract and its closest listed strike.
+
+    option_type: 'CE' or 'PE'. The "monthly" contract is identified purely from
+    the exchange's own data (the last expiry date within a calendar month) -
+    not by assuming a fixed weekday, since NSE has changed expiry weekdays
+    more than once.
+
+    Returns {"token", "tradingsymbol", "expiry" (date), "strike"} or None.
+    """
+    master = _instrument_master()
+    if ticker == "^NSEI":
+        name = "NIFTY"
+    elif ticker == "^NSEBANK":
+        name = "BANKNIFTY"
+    else:
+        name = ticker.replace(".NS", "").upper()
+
+    rows = [
+        r for r in master
+        if r.get("exch_seg") == "NFO"
+        and r.get("name", "").upper() == name
+        and r.get("instrumenttype") in ("OPTSTK", "OPTIDX")
+        and r.get("symbol", "").upper().endswith(option_type)
+    ]
+    if not rows:
+        return None
+
+    today = _dt.date.today()
+    by_month: dict[tuple[int, int], list[tuple[_dt.date, dict]]] = {}
+    for r in rows:
+        d = _parse_expiry(r.get("expiry", ""))
+        if d and d >= today:
+            by_month.setdefault((d.year, d.month), []).append((d, r))
+    if not by_month:
+        return None
+
+    # the monthly contract for each month = its LAST available expiry that month
+    monthly_expiry_per_month = {
+        ym: max(d for d, _ in items) for ym, items in by_month.items()
+    }
+    nearest_month = min(monthly_expiry_per_month, key=lambda ym: monthly_expiry_per_month[ym])
+    expiry_date = monthly_expiry_per_month[nearest_month]
+    candidates = [r for d, r in by_month[nearest_month] if d == expiry_date]
+
+    def strike_of(row: dict) -> float | None:
+        try:
+            return float(row.get("strike", 0)) / 100.0
+        except (TypeError, ValueError):
+            return None
+
+    priced = [(strike_of(r), r) for r in candidates]
+    priced = [(s, r) for s, r in priced if s is not None and s > 0]
+    if not priced:
+        return None
+    best_strike, best_row = min(priced, key=lambda pair: abs(pair[0] - target_strike))
+
+    return {
+        "token": best_row["token"],
+        "tradingsymbol": best_row["symbol"],
+        "expiry": expiry_date,
+        "strike": best_strike,
+    }
+
+
+def get_ltp(exchange: str, tradingsymbol: str, token: str) -> float | None:
+    """Live last-traded-price for one option contract. Requires an active session."""
+    client = _session()
+    try:
+        resp = client.ltpData(exchange, tradingsymbol, token)
+        if resp.get("status"):
+            ltp = float(resp["data"]["ltp"])
+            return ltp if ltp > 0 else None
+    except Exception:
+        pass
+    return None
+
+
 _PERIOD_DAYS = {"6mo": 190, "1y": 380, "2y": 740}
 
 

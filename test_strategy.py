@@ -129,4 +129,41 @@ assert app.analyze("^NSEI", "Nifty 50", make_series(30), 14.0) is None
 assert app.trend_18ema(app.add_indicators(make_series(20))) == "flat"
 print("[8] tiny dataframe handled without crash")
 
+
+# --- real_option_info: exact expiry (no login needed) + live premium (needs login) ---
+import datetime as _dt
+import smartapi_data as sd
+
+_orig_resolve, _orig_ltp = sd.resolve_option, sd.get_ltp
+
+r = app.real_option_info("TECHM.NS", "CALL", 1675)
+assert r is None, "with no mocking, smartapi_data has no live session - must return None, not crash"
+print("[15] real_option_info with no live session available -> None, no crash")
+
+sd.resolve_option = lambda ticker, opt, target: {
+    "token": "1", "tradingsymbol": "TECHM_TEST_CE",
+    "expiry": _dt.date(2026, 7, 31), "strike": 1675.0,
+}
+sd.get_ltp = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no session"))
+r = app.real_option_info("TECHM.NS", "CALL", 1675)
+assert r is not None and r["premium"] is None and r["strike"] == 1675.0
+print(f"[16] real_option_info: expiry resolved without login ({r['expiry']}), premium None (needs login)")
+
+sd.get_ltp = lambda *a, **k: 42.5
+r = app.real_option_info("TECHM.NS", "CALL", 1675)
+assert r["premium"] == 42.5 and r["expiry"] == _dt.date(2026, 7, 31)
+print(f"[17] real_option_info: full live path -> premium={r['premium']}, expiry={r['expiry']}")
+
+sd.resolve_option, sd.get_ltp = _orig_resolve, _orig_ltp  # restore
+
+# --- build_plan is consistent whether fed the estimate or a real premium ---
+plan_est = app.build_plan(1675.0, 33.0, "TECHM.NS", "CALL", 1669.0, True)
+plan_real = app.build_plan(1675.0, 42.5, "TECHM.NS", "CALL", 1669.0, True)
+for p, premium in ((plan_est, 33.0), (plan_real, 42.5)):
+    assert p["sl_premium"] < premium < p["target_premium"]
+    assert p["net_debit"] < premium
+    assert p["hedge_strike"] > 1675.0  # OTM further out for a CALL hedge
+print(f"[18] build_plan consistent for estimate ({plan_est['sl_premium']}-{plan_est['target_premium']}) "
+      f"and real premium ({plan_real['sl_premium']}-{plan_real['target_premium']})")
+
 print("\nAll checks passed.")
