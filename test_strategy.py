@@ -184,6 +184,44 @@ print(f"[17] real_option_info: full live path -> premium={r['premium']}, expiry=
 
 sd.resolve_option, sd.get_ltp = _orig_resolve, _orig_ltp  # restore
 
+# --- hedge economics must use the REAL listed strike and REAL credit ---
+est = app.build_plan(1660.0, 41.0, "TECHM.NS", "CALL", 1651.0, True, 600)
+assert est["hedge_is_live"] is False, "no hedge quote supplied => must be flagged estimated"
+live = app.build_plan(1660.0, 41.0, "TECHM.NS", "CALL", 1651.0, True, 600,
+                      hedge_strike=1700.0, hedge_credit=17.35)
+assert live["hedge_is_live"] is True
+assert live["hedge_strike"] == 1700.0, "must use the strike actually listed"
+assert live["hedge_credit"] == 17.35, "must use the real quoted credit, not 0.4 x premium"
+assert live["net_debit"] == round(41.0 - 17.35, 2)
+assert live["spread_max_profit"] == round((1700.0 - 1660.0) - live["net_debit"], 2)
+assert live["hedged_breakeven"] == round(1660.0 + live["net_debit"], 2)
+assert live["hedge_ok"] is True
+print(f"[23] hedge uses real strike/credit: sell 1700 CE @ Rs.17.35 -> "
+      f"net Rs.{live['net_debit']}, max profit Rs.{live['spread_max_profit']}, "
+      f"R:R {live['hedge_rr']}:1")
+
+# an illiquid far strike quoted ABOVE the near leg must be refused, not drawn
+bad = app.build_plan(1660.0, 41.0, "TECHM.NS", "CALL", 1651.0, True, 600,
+                     hedge_strike=1700.0, hedge_credit=45.0)
+assert bad["hedge_ok"] is False, "credit above the debit is impossible - must be flagged"
+# and a spread that cannot profit is equally unusable
+bad2 = app.build_plan(265.0, 8.0, "VEDL.NS", "PUT", 264.0, True, 1150,
+                      hedge_strike=255.0, hedge_credit=0.05)
+assert bad2["spread_max_profit"] > 0 and bad2["hedge_ok"] is True
+print("[24] nonsensical hedge quotes are refused instead of shown as a payoff table")
+
+# --- exit_check: does it tell me when my reason to hold has gone? ---
+_up = make_series(trend=0.0025, seed=1)
+hold = app.exit_check(_up, "CALL")
+assert hold["status"] in ("HOLD", "WATCH"), f"healthy uptrend CALL should not say EXIT: {hold}"
+broken = app.exit_check(_up, "PUT")   # a PUT held through an uptrend
+assert broken["status"] == "EXIT", f"PUT in an uptrend must signal EXIT, got {broken}"
+assert any("18 EMA" in r for r in broken["reasons"])
+assert app.exit_check(make_series(20), "CALL")["status"] == "UNKNOWN"
+assert app.exit_check(None, "CALL")["status"] == "UNKNOWN"
+print(f"[25] exit_check: healthy CALL -> {hold['status']}, "
+      f"wrong-way PUT -> {broken['status']}, tiny/missing data -> UNKNOWN")
+
 # --- stale Angel One session must trigger a re-login, not a dead app ---
 # Angel One tokens expire ~daily; Streamlit Cloud keeps the process alive for
 # days. A session cached forever therefore works on day 1 and fails on day 2

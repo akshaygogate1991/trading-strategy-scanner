@@ -337,30 +337,48 @@ def premium_estimate(spot: float, vix: float | None, is_stock: bool, days: int =
     return round(0.4 * spot * iv * math.sqrt(days / 365.0), 2)
 
 
-def build_plan(strike: float, premium: float, ticker: str, direction: str,
-              close: float, is_stock: bool, lot: int | None = None) -> dict:
-    """Stop-loss, target, capital, and optional-hedge economics for a strike+premium.
-
-    Pure function of (strike, premium) so it gives identical, consistent numbers
-    whether fed the formula ESTIMATE or a REAL live premium fetched from the
-    broker - only the inputs differ, the math is the same.
-
-    capital_est MUST be computed here rather than by the caller: it depends on
-    the premium, so leaving it outside meant a live premium updated the stop,
-    target and hedge numbers while the displayed capital silently kept the old
-    estimate - understating what the trade actually costs.
-    """
+def hedge_target_strike(strike: float, ticker: str, direction: str,
+                        close: float, is_stock: bool) -> float:
+    """Where we'd LIKE the hedge leg to sit. The listed strike may differ."""
     step = strike_step(close, ticker)
     dist = close * (0.02 if not is_stock else 0.03)  # ~2% OTM indices, ~3% stocks
     n_steps = max(2, round(dist / step))
-    hedge_strike = strike + n_steps * step if direction == "CALL" else strike - n_steps * step
-    width = n_steps * step
-    hedge_credit = round(0.4 * premium, 2)
+    return strike + n_steps * step if direction == "CALL" else strike - n_steps * step
+
+
+def build_plan(strike: float, premium: float, ticker: str, direction: str,
+              close: float, is_stock: bool, lot: int | None = None,
+              hedge_strike: float | None = None,
+              hedge_credit: float | None = None) -> dict:
+    """Stop-loss, target, capital, and hedge economics for a strike+premium.
+
+    hedge_strike / hedge_credit should be the REAL listed strike and REAL live
+    premium of the leg you would actually sell. When they are omitted we fall
+    back to a rounded strike and a 40%-of-premium guess, and the result is
+    flagged hedge_is_live=False.
+
+    That flag matters: showing an estimated hedge credit beside a live main
+    premium produces a payoff table that cannot be executed - the strike may not
+    even be listed, and the credit is invented. Every rupee figure below is only
+    as real as its worst input.
+    """
+    hedge_is_live = hedge_strike is not None and hedge_credit is not None
+    if hedge_strike is None:
+        hedge_strike = hedge_target_strike(strike, ticker, direction, close, is_stock)
+    if hedge_credit is None:
+        hedge_credit = round(0.4 * premium, 2)
+
+    width = abs(hedge_strike - strike)
     net_debit = round(premium - hedge_credit, 2)
     spread_max_profit = round(width - net_debit, 2)
     hedged_breakeven = round(
         strike + net_debit if direction == "CALL" else strike - net_debit, 2
     )
+
+    # With real quotes a spread can come back nonsensical: an illiquid or stale
+    # far leg can be quoted at or above the near leg. Say so rather than drawing
+    # a confident payoff table around impossible numbers.
+    hedge_ok = net_debit > 0 and spread_max_profit > 0 and width > 0
     return {
         "sl_premium": round(premium * (1 - SL_PCT / 100), 2),
         "target_premium": round(premium * (1 + TARGET_PCT / 100), 2),
@@ -370,7 +388,62 @@ def build_plan(strike: float, premium: float, ticker: str, direction: str,
         "net_debit": net_debit,
         "spread_max_profit": spread_max_profit,
         "hedged_breakeven": hedged_breakeven,
+        "hedge_is_live": hedge_is_live,
+        "hedge_ok": hedge_ok,
+        "hedge_rr": round(spread_max_profit / net_debit, 2) if net_debit > 0 else None,
     }
+
+
+def exit_check(df: pd.DataFrame, direction: str) -> dict:
+    """Is the reason you entered still true?
+
+    You entered because 18 EMA and Elliott agreed. This re-tests both against
+    the latest data and reports what changed. Returns:
+        status  'HOLD' | 'EXIT' | 'WATCH' | 'UNKNOWN'
+        reasons list of plain-language explanations
+    """
+    if df is None or len(df) < 40:
+        return {"status": "UNKNOWN", "reasons": ["Not enough recent data to re-check."],
+                "close": None, "ema18": None, "wave_stage": None}
+
+    d = add_indicators(df)
+    close = float(d.iloc[-1]["Close"])
+    ema = float(d.iloc[-1]["ema18"])
+    trend = trend_18ema(d)
+    wave = elliott_directional(d)
+
+    want_trend = "up" if direction == "CALL" else "down"
+    want_bias = "Bullish" if direction == "CALL" else "Bearish"
+    ema_broken = (close < ema) if direction == "CALL" else (close > ema)
+    wave_broken = wave["bias"] != want_bias
+    trend_broken = trend != want_trend
+
+    reasons: list[str] = []
+    if ema_broken:
+        side = "below" if direction == "CALL" else "above"
+        reasons.append(
+            f"**18 EMA broken** — close {close:,.2f} is {side} the 18 EMA {ema:,.2f}. "
+            f"This was your stated exit condition.")
+    elif trend_broken:
+        reasons.append(
+            f"18 EMA no longer trending your way (now '{trend}'). Price has not "
+            f"crossed yet, but momentum is fading.")
+    if wave_broken:
+        reasons.append(
+            f"**Elliott Wave changed** — now reads *{wave['bias']} / {wave['stage']}* "
+            f"(score {int(wave['score'])}). You entered on a {want_bias.lower()} count.")
+
+    if ema_broken or (wave_broken and trend_broken):
+        status = "EXIT"
+    elif reasons:
+        status = "WATCH"
+    else:
+        status = "HOLD"
+        reasons.append(
+            f"Both signals still agree: close {close:,.2f} vs 18 EMA {ema:,.2f}, "
+            f"Elliott *{wave['stage']}*.")
+    return {"status": status, "reasons": reasons, "close": close,
+            "ema18": ema, "wave_stage": wave["stage"]}
 
 
 def real_option_info(ticker: str, direction: str, target_strike: float) -> dict | None:
@@ -618,19 +691,31 @@ with tab_suggest:
             if real:
                 expiry_label = real["expiry"].strftime("%d %b %Y") + " expiry"
                 disp["strike"] = real["strike"]
+                is_stock = s["ticker"] not in LOT_SIZES
+                main_premium = real["premium"] or s["premium_est"]
+                is_live_premium = bool(real["premium"])
+
+                # The hedge leg must be a REAL listed contract at a REAL price.
+                # Previously it was a rounded strike with a 40%-of-premium guess,
+                # so the strike sometimes did not exist and the credit never
+                # matched the market - which makes the whole payoff table
+                # unexecutable.
+                want = hedge_target_strike(real["strike"], s["ticker"],
+                                           s["direction"], s["close"], is_stock)
+                hedge = real_option_info(s["ticker"], s["direction"], want)
+                h_strike = hedge["strike"] if hedge else None
+                h_credit = hedge["premium"] if hedge else None
+                # a hedge strike equal to the main strike is not a spread
+                if h_strike is not None and h_strike == real["strike"]:
+                    h_strike = h_credit = None
+
                 if real["premium"]:
-                    is_live_premium = True
                     disp["premium_est"] = real["premium"]
-                    disp.update(build_plan(
-                        real["strike"], real["premium"], s["ticker"], s["direction"],
-                        s["close"], s["ticker"] not in LOT_SIZES, s["lot"],
-                    ))
-                else:
-                    # exact expiry known, but no live quote right now
-                    disp.update(build_plan(
-                        real["strike"], s["premium_est"], s["ticker"], s["direction"],
-                        s["close"], s["ticker"] not in LOT_SIZES, s["lot"],
-                    ))
+                disp.update(build_plan(
+                    real["strike"], main_premium, s["ticker"], s["direction"],
+                    s["close"], is_stock, s["lot"],
+                    hedge_strike=h_strike, hedge_credit=h_credit,
+                ))
 
             with st.container(border=True):
                 st.subheader(f"{arrow} - {disp['name']}  {disp['strike']:g} "
@@ -663,36 +748,56 @@ with tab_suggest:
                 opt = "CE" if disp["direction"] == "CALL" else "PE"
                 lot = disp["lot"]
                 per_lot = (lambda x: f" (₹{x * lot:,.0f}/lot)") if lot else (lambda x: "")
-                st.markdown(
-                    f"**🛡️ Hedged version (optional):** also SELL **{disp['hedge_strike']:g} {opt}** "
-                    f"for ~₹{disp['hedge_credit']:,.0f} credit → net cost ₹{disp['net_debit']:,.0f}/share"
-                    f"{per_lot(disp['net_debit'])}.\n\n"
-                    f"- Max LOSS hedged: **₹{disp['net_debit']:,.0f}/share**{per_lot(disp['net_debit'])} "
-                    f"vs ₹{disp['premium_est']:,.0f} unhedged → risk cut ~"
-                    f"{round(100 * disp['hedge_credit'] / disp['premium_est'])}%\n"
-                    f"- Max PROFIT hedged: capped at **₹{disp['spread_max_profit']:,.0f}/share**"
-                    f"{per_lot(disp['spread_max_profit'])} — no matter how far the move goes\n"
-                    f"- The hedge does NOT profit when you're wrong — it only makes the loss smaller."
-                )
-                if disp["direction"] == "CALL":
-                    ladder = (
-                        f"**📍 Hedged trade map** ({disp['name']} share price at expiry):\n"
-                        f"- Below **{disp['strike']:g}** → MAX LOSS ₹{disp['net_debit']:,.0f}/share{per_lot(disp['net_debit'])}\n"
-                        f"- At **{disp['hedged_breakeven']:,.2f}** → no profit, no loss (breakeven)\n"
-                        f"- Above {disp['hedged_breakeven']:,.2f} → profit grows\n"
-                        f"- At/above **{disp['hedge_strike']:g}** → MAX PROFIT ₹{disp['spread_max_profit']:,.0f}/share"
-                        f"{per_lot(disp['spread_max_profit'])} (fixed — hedged)"
-                    )
+
+                if not disp.get("hedge_ok", True):
+                    st.warning(
+                        f"🛡️ No sensible hedge right now. The {disp['hedge_strike']:g} {opt} "
+                        f"is quoted at ₹{disp['hedge_credit']:,.2f} against ₹{disp['premium_est']:,.2f} "
+                        "for the leg you'd buy, which leaves nothing to gain. Usually a stale or "
+                        "illiquid far strike — trade unhedged or skip.", icon="⚠️")
                 else:
-                    ladder = (
-                        f"**📍 Hedged trade map** ({disp['name']} share price at expiry):\n"
-                        f"- Above **{disp['strike']:g}** → MAX LOSS ₹{disp['net_debit']:,.0f}/share{per_lot(disp['net_debit'])}\n"
-                        f"- At **{disp['hedged_breakeven']:,.2f}** → no profit, no loss (breakeven)\n"
-                        f"- Below {disp['hedged_breakeven']:,.2f} → profit grows\n"
-                        f"- At/below **{disp['hedge_strike']:g}** → MAX PROFIT ₹{disp['spread_max_profit']:,.0f}/share"
-                        f"{per_lot(disp['spread_max_profit'])} (fixed — hedged)"
+                    hedge_src = ("real Angel One quote" if disp.get("hedge_is_live")
+                                 else "ESTIMATED — not a live quote")
+                    st.markdown(
+                        f"**🛡️ Hedged version (optional):** also SELL **{disp['hedge_strike']:g} {opt}** "
+                        f"for ~₹{disp['hedge_credit']:,.2f} credit → net cost ₹{disp['net_debit']:,.2f}/share"
+                        f"{per_lot(disp['net_debit'])}.  \n"
+                        f"*Hedge leg: {hedge_src}.*\n\n"
+                        f"- Max LOSS hedged: **₹{disp['net_debit']:,.2f}/share**{per_lot(disp['net_debit'])} "
+                        f"vs ₹{disp['premium_est']:,.2f} unhedged → risk cut ~"
+                        f"{round(100 * disp['hedge_credit'] / disp['premium_est'])}%\n"
+                        f"- Max PROFIT hedged: capped at **₹{disp['spread_max_profit']:,.2f}/share**"
+                        f"{per_lot(disp['spread_max_profit'])} — no matter how far the move goes\n"
+                        f"- Reward:risk on the spread = **{disp.get('hedge_rr')}:1**"
+                        + ("  ⚠️ *you risk more than you can make*"
+                           if (disp.get("hedge_rr") or 0) < 1 else "") + "\n"
+                        f"- The hedge does NOT profit when you're wrong — it only makes the loss smaller."
                     )
-                st.markdown(ladder)
+                    if not disp.get("hedge_is_live"):
+                        st.caption(
+                            "⚠️ The hedge credit above is a formula estimate, so the payoff "
+                            "figures are not executable. Check the real price of that strike "
+                            "on your broker before relying on them.")
+                if disp.get("hedge_ok", True):
+                    if disp["direction"] == "CALL":
+                        ladder = (
+                            f"**📍 Hedged trade map** ({disp['name']} share price at expiry):\n"
+                            f"- Below **{disp['strike']:g}** → MAX LOSS ₹{disp['net_debit']:,.2f}/share{per_lot(disp['net_debit'])}\n"
+                            f"- At **{disp['hedged_breakeven']:,.2f}** → no profit, no loss (breakeven)\n"
+                            f"- Above {disp['hedged_breakeven']:,.2f} → profit grows\n"
+                            f"- At/above **{disp['hedge_strike']:g}** → MAX PROFIT ₹{disp['spread_max_profit']:,.2f}/share"
+                            f"{per_lot(disp['spread_max_profit'])} (fixed — hedged)"
+                        )
+                    else:
+                        ladder = (
+                            f"**📍 Hedged trade map** ({disp['name']} share price at expiry):\n"
+                            f"- Above **{disp['strike']:g}** → MAX LOSS ₹{disp['net_debit']:,.2f}/share{per_lot(disp['net_debit'])}\n"
+                            f"- At **{disp['hedged_breakeven']:,.2f}** → no profit, no loss (breakeven)\n"
+                            f"- Below {disp['hedged_breakeven']:,.2f} → profit grows\n"
+                            f"- At/below **{disp['hedge_strike']:g}** → MAX PROFIT ₹{disp['spread_max_profit']:,.2f}/share"
+                            f"{per_lot(disp['spread_max_profit'])} (fixed — hedged)"
+                        )
+                    st.markdown(ladder)
                 st.caption(
                     f"Risk reality: the -{SL_PCT}% stop plans to lose only "
                     f"₹{round(disp['premium_est'] * SL_PCT / 100):,.0f}/share, but if price gaps past it "
@@ -779,6 +884,13 @@ with tab_log:
         st.markdown(f"**Open positions ({len(open_trades)})**")
         if not open_trades:
             st.caption("Nothing logged yet — use \"📝 Log this trade\" on a suggestion card.")
+        else:
+            st.caption(
+                "Each position is re-checked against the two signals you entered on. "
+                "A suggestion disappears from the Suggestions tab the moment its trend "
+                "breaks, so the exit warning has to live here — this is the only place "
+                "that knows what you actually hold."
+            )
         for t in open_trades:
             with st.container(border=True):
                 tag = "CE" if t["direction"] == "CALL" else "PE"
@@ -789,6 +901,19 @@ with tab_log:
                     + (f", lot {t['lot']}" if t.get("lot") else "")
                     + f" — logged {str(t['created_at'])[:16].replace('T', ' ')}"
                 )
+
+                chk = exit_check(data.get(t.get("ticker")), t["direction"])
+                body = "\n\n".join(f"- {r}" for r in chk["reasons"])
+                if chk["status"] == "EXIT":
+                    st.error(f"**🔴 EXIT SIGNAL — close this position**\n\n{body}",
+                             icon="🚨")
+                elif chk["status"] == "WATCH":
+                    st.warning(f"**🟡 WATCH — one signal weakening**\n\n{body}", icon="⚠️")
+                elif chk["status"] == "HOLD":
+                    st.success(f"**🟢 HOLD — entry reason still valid**\n\n{body}", icon="✅")
+                else:
+                    st.info(body)
+
                 c1, c2 = st.columns([1, 1])
                 exit_val = c1.number_input(
                     "Exit premium", min_value=0.0, step=0.5, key=f"exit_{t['id']}"
