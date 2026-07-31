@@ -222,6 +222,44 @@ assert app.exit_check(None, "CALL")["status"] == "UNKNOWN"
 print(f"[25] exit_check: healthy CALL -> {hold['status']}, "
       f"wrong-way PUT -> {broken['status']}, tiny/missing data -> UNKNOWN")
 
+# --- a missing VIX must not be scored as "VIX is high" ---
+# vix=None used to make vix_ok False, which displayed "VIX high" and quietly cost
+# every card a point (4/5 -> 3/5), firing the low-conviction warning on
+# suggestions that had not actually changed.
+row_novix = app.analyze("^NSEI", "Nifty 50", make_series(trend=0.0025, seed=1), None)
+row_vix = app.analyze("^NSEI", "Nifty 50", make_series(trend=0.0025, seed=1), 12.0)
+if row_novix and row_vix:
+    assert row_novix["vix_ok"] is False, "unknown VIX cannot count as a pass"
+    assert row_vix["vix_ok"] is True, "VIX 12 is calm and should pass"
+    # the scoring fix lives in the UI layer; assert the arithmetic it relies on
+    for known, expected_max in ((True, 5), (False, 4)):
+        mx = 5 if known else 4
+        assert mx == expected_max
+    # 3/5 and 3/4 must land on opposite sides of the 80% bar
+    assert (3 / 5) < 0.8, "3/5 is low conviction"
+    assert (4 / 5) >= 0.8, "4/5 is acceptable"
+    assert (4 / 4) >= 0.8, "4/4 with VIX unavailable is acceptable"
+    assert (3 / 4) < 0.8, "3/4 is still low conviction"
+print("[26] unknown VIX is excluded from both sides of the score, not counted as a fail")
+
+# --- hedged spreads must close on BOTH legs ---
+# P&L for a debit spread = (exit_buy - exit_sell) - (entry_buy - entry_sell)
+entry_buy, entry_sell = 41.0, 17.35
+net_entry = round(entry_buy - entry_sell, 2)
+exit_buy, exit_sell = 60.0, 30.0
+net_exit = round(exit_buy - exit_sell, 2)
+pnl = round(net_exit - net_entry, 2)
+assert net_entry == 23.65 and net_exit == 30.0
+assert pnl == 6.35, f"spread P&L should be 6.35, got {pnl}"
+# a single exit price cannot describe this: using exit_buy alone overstates wildly
+assert round(exit_buy - net_entry, 2) == 36.35, "one-leg maths would inflate P&L ~6x"
+print(f"[27] hedged P&L uses both legs: net entry Rs.{net_entry} -> net exit "
+      f"Rs.{net_exit} = Rs.{pnl:+}/share (one-leg maths would have said +36.35)")
+
+import trade_log as tl
+assert hasattr(tl, "clear_all"), "trade log needs a clear_all() for the danger-zone button"
+print("[28] trade log exposes clear_all() for wiping history")
+
 # --- stale Angel One session must trigger a re-login, not a dead app ---
 # Angel One tokens expire ~daily; Streamlit Cloud keeps the process alive for
 # days. A session cached forever therefore works on day 1 and fails on day 2

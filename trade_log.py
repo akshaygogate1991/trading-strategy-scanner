@@ -124,8 +124,13 @@ def fetch_trades(status: str | None = None) -> list[dict]:
 
 
 def close_trade(trade_id: str, exit_premium: float, pnl_per_share: float,
-                pnl_total: float | None) -> bool:
-    """Mark a trade CLOSED with the exit premium and computed P&L."""
+                pnl_total: float | None, extra: dict | None = None) -> bool:
+    """Mark a trade CLOSED with the exit premium and computed P&L.
+
+    `extra` carries the per-leg detail for a hedged spread (exit price of the leg
+    bought and the leg sold), so the closed record shows how the net was reached
+    rather than a single unexplained number.
+    """
     cfg = _config()
     if not cfg:
         return False
@@ -139,11 +144,25 @@ def close_trade(trade_id: str, exit_premium: float, pnl_per_share: float,
                 t["pnl_per_share"] = pnl_per_share
                 t["pnl_total"] = pnl_total
                 t["closed_at"] = datetime.now(timezone.utc).isoformat()
+                if extra:
+                    t.update(extra)
                 found = True
                 break
         if not found:
             return False
         return _put_file(cfg, trades, sha, f"Close trade {trade_id[:8]}")
+    except Exception:
+        return False
+
+
+def clear_all() -> bool:
+    """Wipe every logged trade. Irreversible - the UI must confirm first."""
+    cfg = _config()
+    if not cfg:
+        return False
+    try:
+        _, sha = _get_file(cfg)
+        return _put_file(cfg, [], sha, "Clear trade log")
     except Exception:
         return False
 

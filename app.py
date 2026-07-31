@@ -679,7 +679,14 @@ with tab_suggest:
             else:
                 flows_ok = bool(fii_manual)
 
-            auto_score = 2 + sum([s["vix_ok"], flows_ok, align_ok])
+            # A missing India VIX feed must NOT be scored as "VIX is high". It
+            # silently cost every suggestion a point, turning 4/5 into 3/5 and
+            # firing the low-conviction warning on cards that had not changed.
+            # Unknown data is dropped from BOTH sides of the fraction instead.
+            vix_known = vix is not None
+            auto_score = 2 + sum([flows_ok, align_ok]) + (1 if (vix_known and s["vix_ok"]) else 0)
+            max_score = 5 if vix_known else 4
+            low_conviction = (auto_score / max_score) < 0.8
 
             # Try to replace estimates with the REAL listed contract: exact
             # expiry (needs no login) and live premium (needs an Angel One
@@ -804,17 +811,22 @@ with tab_suggest:
                     f"your true max loss is the full premium (₹{disp['premium_est']:,.0f} unhedged, "
                     f"₹{disp['net_debit']:,.0f} hedged)."
                 )
-                checks = [
-                    "18 EMA ✓",
-                    "Elliott ✓",
-                    ("VIX ✓" if s["vix_ok"] else "VIX high ✗"),
-                    ("FII/DII ✓" if flows_ok else "FII/DII against ✗"),
-                    ("Nifty aligned ✓" if align_ok else "Nifty against ✗"),
-                ]
-                st.caption("Conviction: " + "  |  ".join(checks) + f"  →  **{auto_score}/5**")
-                if auto_score < 4:
-                    st.warning("Below 4/5 conviction — consider skipping or paper-trading this one.",
-                               icon="⚖️")
+                checks = ["18 EMA ✓", "Elliott ✓"]
+                if vix_known:
+                    checks.append("VIX ✓" if s["vix_ok"] else "VIX high ✗")
+                else:
+                    checks.append("VIX n/a — not counted")
+                checks.append("FII/DII ✓" if flows_ok else "FII/DII against ✗")
+                checks.append("Nifty aligned ✓" if align_ok else "Nifty against ✗")
+                st.caption("Conviction: " + "  |  ".join(checks)
+                           + f"  →  **{auto_score}/{max_score}**")
+                if low_conviction:
+                    failed = [c for c in checks if "✗" in c]
+                    st.warning(
+                        f"**{auto_score}/{max_score} conviction** — below the 80% bar. "
+                        + (f"Weak on: {', '.join(failed)}. " if failed else "")
+                        + "Consider skipping or paper-trading this one.",
+                        icon="⚖️")
 
                 log_col1, log_col2 = st.columns([1, 2])
                 with log_col1:
@@ -831,8 +843,15 @@ with tab_suggest:
                             "entry_premium": entry_premium,
                             "lot": disp["lot"],
                             "conviction": auto_score,
+                            "conviction_max": max_score,
                             "hedged": bool(take_hedge),
                             "hedge_strike": disp["hedge_strike"] if take_hedge else None,
+                            # Both legs are stored so the spread can be closed
+                            # properly: exiting a spread means selling the leg you
+                            # bought AND buying back the leg you sold, so one exit
+                            # price cannot describe it.
+                            "entry_buy": disp["premium_est"] if take_hedge else None,
+                            "entry_sell": disp["hedge_credit"] if take_hedge else None,
                             "status": "OPEN",
                         })
                         if ok:
@@ -904,24 +923,51 @@ with tab_log:
 
                 chk = exit_check(data.get(t.get("ticker")), t["direction"])
                 body = "\n\n".join(f"- {r}" for r in chk["reasons"])
+                # Wording is deliberately about the position you ALREADY hold.
+                # None of these mean "enter a new trade" - entries live on the
+                # Suggestions tab only.
                 if chk["status"] == "EXIT":
-                    st.error(f"**🔴 EXIT SIGNAL — close this position**\n\n{body}",
-                             icon="🚨")
+                    st.error(f"**🔴 CLOSE THIS TRADE NOW**\n\n{body}", icon="🚨")
                 elif chk["status"] == "WATCH":
-                    st.warning(f"**🟡 WATCH — one signal weakening**\n\n{body}", icon="⚠️")
+                    st.warning(f"**🟡 STILL IN — but watch closely**\n\n{body}", icon="⚠️")
                 elif chk["status"] == "HOLD":
-                    st.success(f"**🟢 HOLD — entry reason still valid**\n\n{body}", icon="✅")
+                    st.success(f"**🟢 KEEP HOLDING — reason to stay in is intact**\n\n{body}",
+                               icon="✅")
                 else:
                     st.info(body)
 
-                c1, c2 = st.columns([1, 1])
-                exit_val = c1.number_input(
-                    "Exit premium", min_value=0.0, step=0.5, key=f"exit_{t['id']}"
-                )
+                extra: dict = {}
+                if t.get("hedged"):
+                    st.caption(
+                        f"Hedged spread — you BOUGHT {t['strike']:g} {tag} and SOLD "
+                        f"{(t.get('hedge_strike') or 0):g} {tag}. Closing means selling the "
+                        f"first and buying back the second, so enter **both** exit prices."
+                    )
+                    h1, h2, h3 = st.columns([1, 1, 1])
+                    exit_buy = h1.number_input(
+                        f"Exit: sell your {t['strike']:g} {tag}", min_value=0.0, step=0.05,
+                        format="%.2f", key=f"exitbuy_{t['id']}")
+                    exit_sell = h2.number_input(
+                        f"Exit: buy back {(t.get('hedge_strike') or 0):g} {tag}",
+                        min_value=0.0, step=0.05, format="%.2f", key=f"exitsell_{t['id']}")
+                    exit_val = round(exit_buy - exit_sell, 2)   # net credit received
+                    h3.metric("Net exit value", f"₹{exit_val:,.2f}")
+                    extra = {"exit_buy": exit_buy, "exit_sell": exit_sell}
+                    st.caption(
+                        f"P&L = net exit ₹{exit_val:,.2f} − net entry "
+                        f"₹{t['entry_premium']:,.2f} = **₹{exit_val - t['entry_premium']:+,.2f}/share**"
+                    )
+                    c2 = st.container()
+                else:
+                    c1, c2 = st.columns([1, 1])
+                    exit_val = c1.number_input(
+                        "Exit premium", min_value=0.0, step=0.05, format="%.2f",
+                        key=f"exit_{t['id']}")
+
                 if c2.button("Close trade", key=f"close_{t['id']}", use_container_width=True):
                     pnl_ps = round(exit_val - t["entry_premium"], 2)
                     pnl_tot = round(pnl_ps * t["lot"], 2) if t.get("lot") else None
-                    if tl.close_trade(t["id"], exit_val, pnl_ps, pnl_tot):
+                    if tl.close_trade(t["id"], exit_val, pnl_ps, pnl_tot, extra or None):
                         st.toast(f"Closed — P&L ₹{pnl_ps:+,.2f}/share", icon="✅")
                         st.rerun()
                     else:
@@ -933,10 +979,15 @@ with tab_log:
         st.markdown("---")
         st.markdown(f"**Closed trades ({len(closed_trades)})**")
         if closed_trades:
-            df = pd.DataFrame(closed_trades)[
-                ["created_at", "name", "direction", "strike", "entry_premium",
-                 "exit_premium", "pnl_per_share", "pnl_total", "conviction"]
-            ]
+            cols = ["created_at", "name", "direction", "strike", "entry_premium",
+                    "exit_premium", "pnl_per_share", "pnl_total", "conviction"]
+            cdf = pd.DataFrame(closed_trades)
+            # per-leg detail only exists once a hedged spread has been closed
+            for extra_col in ("hedged", "hedge_strike", "entry_buy", "entry_sell",
+                              "exit_buy", "exit_sell"):
+                if extra_col in cdf.columns:
+                    cols.append(extra_col)
+            df = cdf[[c for c in cols if c in cdf.columns]]
             st.dataframe(df, use_container_width=True, hide_index=True)
 
             wins = sum(1 for t in closed_trades if (t.get("pnl_per_share") or 0) > 0)
@@ -948,3 +999,18 @@ with tab_log:
             c3.metric("Avg P&L/share", f"₹{avg_pnl_ps:+.2f}")
         else:
             st.caption("No closed trades yet.")
+
+        if open_trades or closed_trades:
+            st.markdown("---")
+            with st.expander("⚠️ Danger zone — erase the whole log"):
+                st.caption(
+                    "Deletes every open and closed trade permanently. There is no undo, "
+                    "and your win-rate history goes with it."
+                )
+                sure = st.checkbox("Yes, delete all my logged trades", key="wipe_confirm")
+                if st.button("🗑️ Clear entire trade log", disabled=not sure):
+                    if tl.clear_all():
+                        st.success("Trade log cleared.")
+                        st.rerun()
+                    else:
+                        st.error("Could not clear the log — try again in a moment.")
