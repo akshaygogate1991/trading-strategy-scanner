@@ -147,9 +147,24 @@ import smartapi_data as sd
 
 _orig_resolve, _orig_ltp = sd.resolve_option, sd.get_ltp
 
+# This must pass BOTH with and without working Angel One credentials. It used to
+# assert None, which only holds on a machine that cannot log in. On a machine
+# with real secrets it resolves a real contract - and the test then failed for
+# the best possible reason: everything worked.
 r = app.real_option_info("TECHM.NS", "CALL", 1675)
-assert r is None, "with no mocking, smartapi_data has no live session - must return None, not crash"
-print("[15] real_option_info with no live session available -> None, no crash")
+if r is None:
+    print("[15] no live Angel One session here -> returns None, no crash")
+else:
+    for key in ("strike", "expiry", "premium", "tradingsymbol"):
+        assert key in r, f"missing '{key}' in real_option_info result"
+    assert isinstance(r["expiry"], _dt.date), "expiry must be a date"
+    assert r["strike"] > 0, "strike must be positive"
+    assert r["expiry"] >= _dt.date.today(), "resolved contract must not be expired"
+    prem = r["premium"]
+    assert prem is None or prem > 0, f"premium must be positive or None, got {prem}"
+    print(f"[15] LIVE Angel One session -> {r['tradingsymbol']} "
+          f"strike {r['strike']:g}, expiry {r['expiry']}, "
+          f"premium {'Rs.' + str(prem) if prem else 'unavailable (market closed?)'}")
 
 sd.resolve_option = lambda ticker, opt, target: {
     "token": "1", "tradingsymbol": "TECHM_TEST_CE",
