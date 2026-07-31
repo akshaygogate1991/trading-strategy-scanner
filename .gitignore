@@ -5,3 +5,16 @@ venv/
 .env
 .streamlit/secrets.toml
 logs/
+
+# Office documents and their lock files. A 237 KB transcript and a Word lock
+# file ("~$...") both reached the public repo because Word had the document
+# open, which made the delete fail silently.
+*.docx
+*.doc
+*.xlsx
+~$*
+
+# research/backtest scratch output
+data/
+*_events.csv
+*_trades.csv

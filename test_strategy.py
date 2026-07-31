@@ -8,7 +8,9 @@ import types
 import numpy as np
 import pandas as pd
 
-src = open("app.py").read()
+# app.py contains rupee signs, arrows and emoji. Windows defaults to cp1252,
+# which cannot decode them, so the encoding must be explicit.
+src = open("app.py", encoding="utf-8").read()
 logic_src = src[: src.index("st.set_page_config")]
 app = types.ModuleType("app_logic")
 sys.modules["app_logic"] = app
