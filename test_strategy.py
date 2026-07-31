@@ -96,7 +96,16 @@ for seed in range(25):
         assert c["direction"] == "CALL", "uptrend suggestion must be CALL"
         assert c["sl_premium"] == round(c["premium_est"] * 0.6, 2)
         assert c["target_premium"] == round(c["premium_est"] * 1.8, 2)
-        assert c["capital_est"] == round(c["premium_est"] * 75, 0)
+        # Assert the INVARIANT (capital = premium x lot), never a hardcoded lot.
+        # This used to hardcode 75, but resolve_lot() reads the live NSE lot size
+        # from Angel One's instrument master - and NSE changes lot sizes. A test
+        # that pins today's number fails the day the exchange revises it, which
+        # says nothing about whether our code is correct.
+        if c["lot"]:
+            assert c["capital_est"] == round(c["premium_est"] * c["lot"], 0), (
+                f"capital {c['capital_est']} != premium {c['premium_est']} x lot {c['lot']}")
+        else:
+            assert c["capital_est"] is None, "no lot size means no capital figure"
         calls += 1
     if p:
         assert p["direction"] == "PUT", "downtrend suggestion must be PUT"
