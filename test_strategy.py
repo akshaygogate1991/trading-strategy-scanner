@@ -158,6 +158,60 @@ print(f"[17] real_option_info: full live path -> premium={r['premium']}, expiry=
 
 sd.resolve_option, sd.get_ltp = _orig_resolve, _orig_ltp  # restore
 
+# --- stale Angel One session must trigger a re-login, not a dead app ---
+# Angel One tokens expire ~daily; Streamlit Cloud keeps the process alive for
+# days. A session cached forever therefore works on day 1 and fails on day 2
+# with "Invalid Token" - which is exactly what happened in production.
+assert sd._looks_like_auth_error("Invalid Token")
+assert sd._looks_like_auth_error("AB1010: token expired")
+assert sd._looks_like_auth_error("Session Expired")
+assert not sd._looks_like_auth_error("Invalid symboltoken 99999")
+assert not sd._looks_like_auth_error("Rate limit exceeded")
+print("[20] auth errors distinguished from ordinary request errors")
+
+
+class _FakeClient:
+    """Rejects the first session's calls the way an expired token does."""
+    def __init__(self, generation):
+        self.generation = generation
+
+    def ltpData(self, exchange, tradingsymbol, token):
+        if self.generation == 0:
+            return {"status": False, "message": "Invalid Token"}
+        return {"status": True, "data": {"ltp": 10.8}}
+
+
+_gen = {"n": 0}
+_orig_session = sd._session
+
+
+def _fake_session(force_new=False):
+    if force_new:
+        _gen["n"] += 1
+    return _FakeClient(_gen["n"])
+
+
+sd._session = _fake_session
+try:
+    got = sd.get_ltp("NFO", "VEDL25AUG26270PE", "12345")
+    assert got == 10.8, f"expected re-login to recover the quote, got {got}"
+    assert _gen["n"] == 1, "should have logged in exactly once more"
+    print(f"[21] stale session recovered: re-logged in and returned Rs.{got}")
+
+    # a NON-auth failure must NOT trigger a pointless re-login
+    _gen["n"] = 0
+    sd._session = lambda force_new=False: type("C", (), {
+        "ltpData": lambda self, *a: {"status": False, "message": "Invalid symboltoken"}
+    })()
+    try:
+        sd.get_ltp("NFO", "BAD", "0")
+        raise AssertionError("bad symbol should raise, not silently pass")
+    except RuntimeError as exc:
+        assert "symboltoken" in str(exc)
+    print("[22] a bad symbol raises without a wasted re-login")
+finally:
+    sd._session = _orig_session
+
 # --- build_plan is consistent whether fed the estimate or a real premium ---
 plan_est = app.build_plan(1675.0, 33.0, "TECHM.NS", "CALL", 1669.0, True, 600)
 plan_real = app.build_plan(1675.0, 42.5, "TECHM.NS", "CALL", 1669.0, True, 600)

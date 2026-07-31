@@ -121,9 +121,35 @@ def resolve_token(ticker: str) -> tuple[str, str, str]:
     raise LookupError(f"Symbol not found on NSE: {ticker} (looked for {want})")
 
 
-@lru_cache(maxsize=1)
-def _session():
-    """Log in once and cache the SmartConnect client. DATA ONLY."""
+# Angel One sessions expire (roughly daily). Streamlit Cloud keeps the app
+# process alive for days, so a session cached with @lru_cache stays stale
+# forever and every call afterwards fails with "Invalid Token" - which is
+# exactly what happened the day after live premiums first worked.
+SESSION_TTL_SECONDS = 2 * 60 * 60
+_SESSION: dict = {"client": None, "created": None}
+
+# Substrings Angel One uses when the SESSION is bad, as opposed to the request.
+_AUTH_ERROR_HINTS = (
+    "invalid token", "token expired", "session expired",
+    "unauthorized", "invalid session", "please login",
+)
+
+
+def _looks_like_auth_error(message: str) -> bool:
+    """True if this failure means 'log in again', not 'your request was wrong'."""
+    return any(h in str(message).lower() for h in _AUTH_ERROR_HINTS)
+
+
+def _session(force_new: bool = False):
+    """Return a live SmartConnect client, logging in again when the old one ages
+    out. DATA ONLY - this never places orders.
+    """
+    now = _dt.datetime.now()
+    cached, created = _SESSION["client"], _SESSION["created"]
+    if (not force_new and cached is not None and created is not None
+            and (now - created).total_seconds() < SESSION_TTL_SECONDS):
+        return cached
+
     try:
         from SmartApi import SmartConnect  # package: smartapi-python
         import pyotp
@@ -140,12 +166,12 @@ def _session():
     resp = client.generateSession(s["client_id"], s["mpin"], otp)
     if not resp.get("status"):
         raise RuntimeError(f"SmartAPI login failed: {resp.get('message', resp)}")
+    _SESSION["client"], _SESSION["created"] = client, now
     return client
 
 
 def get_history(ticker: str, interval: str = "1d", days: int = 400) -> pd.DataFrame | None:
     """Fetch candles for one ticker as an OHLCV DataFrame (yfinance-compatible)."""
-    client = _session()
     token, tradingsymbol, exch = resolve_token(ticker)
     smart_interval = INTERVAL_MAP.get(interval, "ONE_DAY")
 
@@ -158,8 +184,20 @@ def get_history(ticker: str, interval: str = "1d", days: int = 400) -> pd.DataFr
         "fromdate": from_dt.strftime("%Y-%m-%d 09:15"),
         "todate": to_dt.strftime("%Y-%m-%d 15:30"),
     }
-    resp = client.getCandleData(params)
-    candles = resp.get("data") if isinstance(resp, dict) else None
+
+    # Same stale-session retry as get_ltp: an expired token here silently drops
+    # the whole app back to Yahoo Finance for every instrument.
+    candles = None
+    for attempt in (0, 1):
+        client = _session(force_new=(attempt == 1))
+        resp = client.getCandleData(params)
+        if isinstance(resp, dict) and resp.get("data"):
+            candles = resp["data"]
+            break
+        msg = str(resp.get("message", resp)) if isinstance(resp, dict) else str(resp)
+        if attempt == 0 and _looks_like_auth_error(msg):
+            continue
+        break
     if not candles:
         return None
 
@@ -290,15 +328,24 @@ def get_ltp(exchange: str, tradingsymbol: str, token: str) -> float | None:
     Raises on any failure (login, network, bad response) instead of swallowing
     the error, so the caller can capture and surface the exact reason a live
     quote wasn't available - much easier to diagnose than a silent fallback.
+
+    A stale session returns status=False with "Invalid Token" rather than
+    raising, so we log in again and retry once before giving up.
     """
-    client = _session()
-    resp = client.ltpData(exchange, tradingsymbol, token)
-    if not resp.get("status"):
-        raise RuntimeError(f"ltpData rejected: {resp.get('message', resp)}")
-    ltp = float(resp["data"]["ltp"])
-    if ltp <= 0:
-        raise RuntimeError(f"ltpData returned non-positive price: {ltp}")
-    return ltp
+    last_msg = ""
+    for attempt in (0, 1):
+        client = _session(force_new=(attempt == 1))
+        resp = client.ltpData(exchange, tradingsymbol, token)
+        if resp.get("status"):
+            ltp = float(resp["data"]["ltp"])
+            if ltp <= 0:
+                raise RuntimeError(f"ltpData returned non-positive price: {ltp}")
+            return ltp
+        last_msg = str(resp.get("message", resp))
+        if attempt == 0 and _looks_like_auth_error(last_msg):
+            continue                      # expired session - re-login and retry
+        break
+    raise RuntimeError(f"ltpData rejected: {last_msg}")
 
 
 _PERIOD_DAYS = {"6mo": 190, "1y": 380, "2y": 740}
