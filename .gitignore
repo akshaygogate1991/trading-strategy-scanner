@@ -14,7 +14,12 @@ logs/
 *.xlsx
 ~$*
 
-# research/backtest scratch output
+# research/backtest scratch output — cached market data and computed results.
+# These regenerate from Angel One on demand, so they do not belong in the repo:
+# 690 KB of CSVs slows every Streamlit Cloud deploy for no benefit.
 data/
+sma_data/
+ema_elliott_mask.json
 *_events.csv
 *_trades.csv
+*_analysis.csv
