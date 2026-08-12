@@ -116,6 +116,40 @@ def get_market_data(tickers: tuple[str, ...]) -> tuple[dict[str, pd.DataFrame], 
     return fetch_yahoo(tickers, DATA_PERIOD), "Yahoo Finance"
 
 
+@st.cache_data(ttl=60 * 20, show_spinner=False)
+def fetch_one(ticker: str) -> pd.DataFrame | None:
+    """Fetch ONE instrument, for a position you actually hold.
+
+    The bulk scan silently drops any instrument whose fetch failed or came back
+    short, so a stock you own could report "not enough data to re-check" for a
+    whole session and then suddenly say EXIT. An exit warning that goes quiet is
+    worse than no warning at all, so open positions get their own fetch and try
+    both sources rather than relying on the scan having succeeded.
+    """
+    if not ticker:
+        return None
+    try:
+        import smartapi_data as sd
+
+        frame = sd.get_history(ticker, "1d", 400)
+        if frame is not None and len(frame) >= 40:
+            return frame
+    except Exception:
+        pass
+    try:
+        frame = yf.download(ticker, period=DATA_PERIOD, interval="1d",
+                            auto_adjust=True, progress=False, threads=False)
+        if frame is not None and not frame.empty:
+            if isinstance(frame.columns, pd.MultiIndex):
+                frame.columns = frame.columns.get_level_values(0)
+            frame = frame.dropna(subset=["Open", "High", "Low", "Close"])
+            if len(frame) >= 40:
+                return frame
+    except Exception:
+        pass
+    return None
+
+
 @st.cache_data(ttl=60 * 30, show_spinner=False)
 def fetch_fii_dii() -> dict | None:
     """Latest FII/DII cash-market net flows (Rs. crore) from NSE's public API.
@@ -417,7 +451,11 @@ def exit_check(df: pd.DataFrame, direction: str) -> dict:
         reasons list of plain-language explanations
     """
     if df is None or len(df) < 40:
-        return {"status": "UNKNOWN", "reasons": ["Not enough recent data to re-check."],
+        return {"status": "UNKNOWN",
+                "reasons": ["Could not fetch enough price history for this stock "
+                            "right now, so the exit signal cannot be checked. This "
+                            "is a data problem, NOT a hold recommendation — check "
+                            "the chart on your broker before deciding."],
                 "close": None, "ema18": None, "wave_stage": None}
 
     d = add_indicators(df)
@@ -962,7 +1000,14 @@ with tab_log:
                     + f" — logged {str(t['created_at'])[:16].replace('T', ' ')}"
                 )
 
-                chk = exit_check(data.get(t.get("ticker")), t["direction"])
+                # Prefer the bulk scan, but fall back to a dedicated fetch for
+                # this one instrument - see fetch_one(). A held position must
+                # not go dark just because the scan skipped it.
+                _tk = t.get("ticker")
+                _df = data.get(_tk)
+                if _df is None or len(_df) < 40:
+                    _df = fetch_one(_tk)
+                chk = exit_check(_df, t["direction"])
                 body = "\n\n".join(f"- {r}" for r in chk["reasons"])
                 # Wording is deliberately about the position you ALREADY hold.
                 # None of these mean "enter a new trade" - entries live on the
