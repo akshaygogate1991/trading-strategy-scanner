@@ -136,8 +136,23 @@ def entries_sma(ticker, df):
 
 
 def entries_both(ticker, df):
+    """Triple confirmation: 18 EMA trend up, Elliott bullish, AND the SMA18
+    two-close breakout — all three agreeing on the same bar."""
     m = ema_elliott_mask(ticker, df)
     return [i for i in entries_sma(ticker, df) if i < len(m) and m[i]]
+
+
+def entries_random(ticker, df):
+    """Control: same number of trades as EMA+Elliott, on random days.
+
+    Long-only calls over a rising market make money on the exit rule alone, so
+    without this row a positive result tells you nothing about the signal.
+    """
+    n = len(entries_ema(ticker, df))
+    if n <= 0 or len(df) < 200:
+        return []
+    rng = np.random.default_rng(abs(hash(ticker)) % (2 ** 32))
+    return sorted(int(x) for x in rng.integers(121, len(df) - 35, size=n))
 
 
 # ------------------------------------------------------------------ simulate
@@ -247,8 +262,10 @@ def main():
     r_ema = grid("1. EMA + ELLIOTT  (the live app's signal)", frames, entries_ema)
     _save_mask_cache()
     r_sma = grid("2. SMA18 only  (two closes above the 18 SMA)", frames, entries_sma)
-    r_both = grid("3. BOTH  (SMA18 entry, only when EMA+Elliott also confirms up)",
+    r_both = grid("3. TRIPLE CONFIRMATION  (18 EMA + Elliott + SMA18 breakout)",
                   frames, entries_both)
+    r_rand = grid("4. RANDOM entries  (control - no signal at all)",
+                  frames, entries_random)
     _save_mask_cache()
 
     # side-by-side on the rules that matter
@@ -257,19 +274,56 @@ def main():
     print("=" * 92)
     picks = [(-0.40, 0.80), (-0.50, 0.50), (-0.50, 1.00),
              (-0.60, None), (-0.50, None), (None, None)]
-    print(f"{'stop / target':>22s}{'EMA+Elliott':>16s}{'SMA18':>14s}{'BOTH':>14s}")
-    print("-" * 68)
+    print(f"{'stop / target':>22s}{'EMA+Elliott':>14s}{'SMA18':>11s}"
+          f"{'TRIPLE':>11s}{'RANDOM':>11s}")
+    print("-" * 70)
     for s, tg in picks:
         nm = f"{label(s, 'stop')} / {label(tg, 'tgt')}"
         a = r_ema.get((s, tg), (0, 0, 0))
         b = r_sma.get((s, tg), (0, 0, 0))
         c = r_both.get((s, tg), (0, 0, 0))
-        print(f"{nm:>22s}{a[0]:+13.2f}  {b[0]:+13.2f} {c[0]:+13.2f}")
-    print(f"\n  n =                  {r_ema.get((-0.4, 0.8), (0, 0, 0))[2]:>10d}  "
-          f"{r_sma.get((-0.4, 0.8), (0, 0, 0))[2]:>13d} "
-          f"{r_both.get((-0.4, 0.8), (0, 0, 0))[2]:>13d}")
+        dd = r_rand.get((s, tg), (0, 0, 0))
+        print(f"{nm:>22s}{a[0]:+11.2f}{b[0]:+11.2f}{c[0]:+11.2f}{dd[0]:+11.2f}")
+    key = (-0.4, 0.8)
+    print(f"{'trades':>22s}{r_ema.get(key, (0, 0, 0))[2]:>11d}"
+          f"{r_sma.get(key, (0, 0, 0))[2]:>11d}{r_both.get(key, (0, 0, 0))[2]:>11d}"
+          f"{r_rand.get(key, (0, 0, 0))[2]:>11d}")
+
+    # ---- the direct answer to "is the new setup better than 40/80?" ----
+    print("\n" + "=" * 92)
+    print("  VERDICT — new setup vs the old 40/80 rule")
+    print("=" * 92)
+    old = r_ema.get((-0.40, 0.80), (0, 0, 0))
+    new_ema = r_ema.get((-0.60, None), (0, 0, 0))
+    new_tri = r_both.get((-0.60, None), (0, 0, 0))
+    rnd_new = r_rand.get((-0.60, None), (0, 0, 0))
+    rows = [
+        ("OLD  EMA+Elliott @ -40/+80", old),
+        ("NEW  EMA+Elliott @ -60/none", new_ema),
+        ("NEW  TRIPLE      @ -60/none", new_tri),
+        ("CTRL Random      @ -60/none", rnd_new),
+    ]
+    for nm, r in rows:
+        net = r[0] - COST_PCT * 100
+        sig = "significant" if abs(r[1]) >= 2 else "not significant"
+        print(f"  {nm:30s} {r[0]:+7.2f}%  (net {net:+6.2f}%)  "
+              f"t={r[1]:+5.2f}  n={r[2]:4d}  {sig}")
+
+    print()
+    if new_tri[0] > new_ema[0] and abs(new_tri[1]) >= 2:
+        print("  Triple confirmation beats EMA+Elliott alone. Worth adding.")
+    elif new_tri[2] < 100:
+        print(f"  Triple confirmation produced only {new_tri[2]} trades — too few to")
+        print("  judge. Adding the SMA filter mostly just removes opportunities.")
+    else:
+        print("  Triple confirmation does NOT beat EMA+Elliott alone. The extra")
+        print("  filter costs trades without improving them — the two signals")
+        print("  overlap ~96%, so the third check adds little new information.")
+    if new_tri[0] - rnd_new[0] < COST_PCT * 100:
+        print("  It also does not beat RANDOM entry by more than trading costs.")
+
     print(f"\nDone in {time.time() - t0:.0f}s. Costs of ~{COST_PCT * 100:.0f}% per "
-          f"round trip are NOT deducted in the tables above.")
+          f"round trip are NOT deducted in the grids above (they are in 'net').")
 
 
 if __name__ == "__main__":
