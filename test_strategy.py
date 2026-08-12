@@ -10,6 +10,22 @@ import pandas as pd
 
 # app.py contains rupee signs, arrows and emoji. Windows defaults to cp1252,
 # which cannot decode them, so the encoding must be explicit.
+# yfinance is a real app dependency (the fallback price feed), but these tests
+# exercise pure indicator logic on synthetic data and never fetch anything. Stub
+# it if absent so a missing package cannot block the test - while saying so
+# loudly, because on Streamlit Cloud it IS installed and IS used.
+try:
+    import yfinance  # noqa: F401
+except ImportError:
+    _stub = types.ModuleType("yfinance")
+    _stub.download = lambda *a, **k: None
+    _stub.Ticker = lambda *a, **k: None
+    sys.modules["yfinance"] = _stub
+    print("NOTE: yfinance not installed locally - stubbed for these tests.\n"
+          "      The live app needs it as its fallback feed (it is in\n"
+          "      requirements.txt, so Streamlit Cloud has it). To match the\n"
+          "      deployed environment locally: python -m pip install yfinance\n")
+
 src = open("app.py", encoding="utf-8").read()
 logic_src = src[: src.index("st.set_page_config")]
 app = types.ModuleType("app_logic")
@@ -94,8 +110,12 @@ for seed in range(25):
     f = app.analyze("^NSEI", "Nifty 50", make_chop(seed=seed), 14.0)
     if c:
         assert c["direction"] == "CALL", "uptrend suggestion must be CALL"
-        assert c["sl_premium"] == round(c["premium_est"] * 0.6, 2)
-        assert c["target_premium"] == round(c["premium_est"] * 1.8, 2)
+        # Derive from the constants, never hardcode them. These read 0.6 and 1.8
+        # because SL_PCT was 40 and TARGET_PCT 80; changing the stop to 60% then
+        # failed a test that was checking the old setting, not the arithmetic.
+        assert c["sl_premium"] == round(c["premium_est"] * (1 - app.SL_PCT / 100), 2)
+        assert c["target_premium"] == round(c["premium_est"] * (1 + app.TARGET_PCT / 100), 2)
+        assert c["sl_premium"] < c["premium_est"] < c["target_premium"]
         # Assert the INVARIANT (capital = premium x lot), never a hardcoded lot.
         # This used to hardcode 75, but resolve_lot() reads the live NSE lot size
         # from Angel One's instrument master - and NSE changes lot sizes. A test
@@ -258,6 +278,18 @@ print(f"[27] hedged P&L uses both legs: net entry Rs.{net_entry} -> net exit "
 
 import trade_log as tl
 assert hasattr(tl, "clear_all"), "trade log needs a clear_all() for the danger-zone button"
+assert hasattr(tl, "update_trade"), "trade log needs update_trade() to fix a wrong exit"
+
+# --- the exit settings the option simulation actually supported ---
+assert app.SL_PCT == 60, (
+    f"stop should be 60%, got {app.SL_PCT}. -40% tested at -3.01% per trade "
+    "versus +10.07% at -60%: a tight PREMIUM stop fires on noise.")
+_p = app.build_plan(1660.0, 41.0, "TECHM.NS", "CALL", 1651.0, True, 600)
+assert _p["sl_premium"] == round(41.0 * (1 - app.SL_PCT / 100), 2), \
+    "stop premium must be SL_PCT below entry"
+assert _p["sl_premium"] < 41.0
+print(f"[29] exit settings: stop -{app.SL_PCT}% (Rs.{_p['sl_premium']} on a Rs.41 "
+      f"premium), no fixed target — 18 EMA is the exit")
 print("[28] trade log exposes clear_all() for wiping history")
 
 # --- stale Angel One session must trigger a re-login, not a dead app ---

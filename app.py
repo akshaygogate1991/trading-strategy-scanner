@@ -62,8 +62,22 @@ def resolve_lot(ticker: str) -> int | None:
     return LOT_SIZES.get(ticker)
 
 DATA_PERIOD = "1y"
-SL_PCT = 40      # stop-loss: exit if premium falls 40%
-TARGET_PCT = 80  # target: +80% on premium (2x the risk)
+# Exit settings, chosen from a Black-Scholes simulation of ~3,500 option trades
+# across two independent signals over 4 years of Angel One data:
+#
+#   stop -40% / target +80%  ->  -3.01% per trade   (what this app used to say)
+#   stop -60% / no target    -> +10.07% per trade
+#   no stop  / no target     -> +16.06% per trade   (but -100% worst case)
+#
+# Two findings drove the change. A -40% PREMIUM stop is only a small move in
+# the underlying, so it fires on noise and throws you out of trades that
+# recover. And a fixed target caps the fat right tail, which is the entire
+# reason to buy an option rather than the stock.
+#
+# The real exit is the 18 EMA break - the same condition that would remove the
+# suggestion from this screen. The stop is a disaster brake, not a plan.
+SL_PCT = 60       # stop-loss: exit if premium falls 60% (wide, deliberately)
+TARGET_PCT = 80   # kept for reference display only - NOT a recommended exit
 
 
 # ---------------------------------------------------------------- data layer
@@ -734,8 +748,15 @@ with tab_suggest:
                     m2.metric(f"Capital / lot ({disp['lot']})", f"₹{disp['capital_est']:,.0f}")
                 else:
                     m2.metric("Capital / lot", "check broker")
-                m3.metric(f"Stop-loss (-{SL_PCT}%)", f"₹{disp['sl_premium']:,.0f}")
-                m4.metric(f"Target (+{TARGET_PCT}%)", f"₹{disp['target_premium']:,.0f}")
+                m3.metric(f"Stop-loss (-{SL_PCT}%)", f"₹{disp['sl_premium']:,.0f}",
+                          help="A disaster brake, not a plan. Tested at -40%, -50%, "
+                               "-60% and no stop: the wider the stop, the better the "
+                               "result. A -40% PREMIUM move is only a small move in "
+                               "the stock, so a tight stop fires on noise.")
+                m4.metric("Exit when spot hits", f"{disp['underlying_exit']:,.2f}",
+                          help="The 18 EMA. THIS is the real exit, not a premium "
+                               "target. A fixed target caps the rare big winners, "
+                               "which are the whole reason to buy an option.")
                 if not is_live_premium:
                     st.caption(
                         "⚠️ Premium is a formula estimate, not the live market price - "
@@ -744,13 +765,33 @@ with tab_suggest:
                     )
                     if real and real.get("premium_error"):
                         st.caption(f"Live quote failed: {real['premium_error']}")
-                st.write(
-                    f"Spot **{disp['close']:,.2f}** vs 18 EMA **{disp['ema18']:,.2f}**  |  "
-                    f"RSI {disp['rsi']}  |  Elliott: *{disp['wave_stage']}* (score {disp['wave_score']})"
+                _opt = "CE" if disp["direction"] == "CALL" else "PE"
+                _side = "falls below" if disp["direction"] == "CALL" else "rises above"
+                st.info(
+                    f"**WHAT TO DO**\n\n"
+                    f"**1. BUY** — 1 lot ({disp['lot'] or '?'}) of "
+                    f"**{disp['name']} {disp['strike']:g} {_opt}**, {expiry_label}. "
+                    f"Cost about **₹{disp['capital_est']:,.0f}**."
+                    if disp["capital_est"] else
+                    f"**WHAT TO DO**\n\n**1. BUY** — **{disp['name']} "
+                    f"{disp['strike']:g} {_opt}**, {expiry_label}.",
+                    icon="🛒",
                 )
-                st.write(
-                    f"Also exit if {'close falls below' if disp['direction'] == 'CALL' else 'close rises above'} "
-                    f"the 18 EMA (~{disp['underlying_exit']:,.2f})."
+                st.markdown(
+                    f"**2. EXIT when EITHER happens — whichever comes first:**\n\n"
+                    f"- **{disp['name']} share price {_side} {disp['underlying_exit']:,.2f}** "
+                    f"(the 18 EMA) — this is the main exit, and the one the Trade Log "
+                    f"will warn you about.\n"
+                    f"- Premium drops to **₹{disp['sl_premium']:,.2f}** "
+                    f"(−{SL_PCT}%) — emergency brake only.\n\n"
+                    f"**3. Do NOT set a fixed profit target.** Testing on ~3,500 "
+                    f"simulated option trades showed a +80% target turned a "
+                    f"+10% average into −3%. Let the 18 EMA decide when you are done."
+                )
+                st.caption(
+                    f"Why this trade: spot {disp['close']:,.2f} vs 18 EMA "
+                    f"{disp['ema18']:,.2f} | RSI {disp['rsi']} | "
+                    f"Elliott {disp['wave_stage']} (score {disp['wave_score']})"
                 )
                 opt = "CE" if disp["direction"] == "CALL" else "PE"
                 lot = disp["lot"]
@@ -997,6 +1038,46 @@ with tab_log:
             c1.metric("Win rate", f"{100 * wins / len(closed_trades):.0f}%")
             c2.metric("Total P&L", f"₹{total_pnl:+,.0f}")
             c3.metric("Avg P&L/share", f"₹{avg_pnl_ps:+.2f}")
+
+            with st.expander("✏️ Fix a closed trade (wrong exit premium?)"):
+                st.caption(
+                    "One mistyped exit price can dominate your whole P&L, so it is "
+                    "worth correcting rather than living with. P&L is recalculated "
+                    "automatically from the value you enter."
+                )
+                opts = {
+                    f"{t['name']} {t['strike']:g} "
+                    f"{'CE' if t['direction'] == 'CALL' else 'PE'} — "
+                    f"entry ₹{t['entry_premium']:,.2f}, exit ₹{(t.get('exit_premium') or 0):,.2f}"
+                    f" → P&L ₹{(t.get('pnl_total') or 0):+,.0f}": t
+                    for t in closed_trades
+                }
+                pick = st.selectbox("Which trade?", list(opts), key="fix_pick")
+                tr = opts[pick]
+                f1, f2 = st.columns(2)
+                new_exit = f1.number_input(
+                    "Correct exit premium", min_value=0.0, step=0.05, format="%.2f",
+                    value=float(tr.get("exit_premium") or 0.0), key="fix_exit")
+                new_entry = f2.number_input(
+                    "Correct entry premium", min_value=0.0, step=0.05, format="%.2f",
+                    value=float(tr.get("entry_premium") or 0.0), key="fix_entry")
+                new_ps = round(new_exit - new_entry, 2)
+                new_tot = round(new_ps * tr["lot"], 2) if tr.get("lot") else None
+                st.write(
+                    f"New P&L: **₹{new_ps:+,.2f}/share**"
+                    + (f" = **₹{new_tot:+,.0f}** total" if new_tot is not None else "")
+                    + f"  (was ₹{(tr.get('pnl_total') or 0):+,.0f})"
+                )
+                if st.button("💾 Save correction", key="fix_save"):
+                    ok = tl.update_trade(tr["id"], {
+                        "entry_premium": new_entry, "exit_premium": new_exit,
+                        "pnl_per_share": new_ps, "pnl_total": new_tot,
+                    })
+                    if ok:
+                        st.success("Corrected.")
+                        st.rerun()
+                    else:
+                        st.error("Could not save — try again.")
         else:
             st.caption("No closed trades yet.")
 

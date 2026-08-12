@@ -155,6 +155,33 @@ def close_trade(trade_id: str, exit_premium: float, pnl_per_share: float,
         return False
 
 
+def update_trade(trade_id: str, fields: dict) -> bool:
+    """Correct an already-saved trade (e.g. an exit premium typed wrong).
+
+    A single mistyped exit price can dominate the whole P&L: an 84 entered
+    instead of 31 on one AXISBANK put accounted for ~92% of a reported
+    +Rs.41,702, which would have made the strategy look far better than it was.
+    Being able to fix it matters more than it sounds.
+    """
+    cfg = _config()
+    if not cfg:
+        return False
+    try:
+        trades, sha = _get_file(cfg)
+        found = False
+        for t in trades:
+            if t.get("id") == trade_id:
+                t.update(fields)
+                t["edited_at"] = datetime.now(timezone.utc).isoformat()
+                found = True
+                break
+        if not found:
+            return False
+        return _put_file(cfg, trades, sha, f"Edit trade {trade_id[:8]}")
+    except Exception:
+        return False
+
+
 def clear_all() -> bool:
     """Wipe every logged trade. Irreversible - the UI must confirm first."""
     cfg = _config()
