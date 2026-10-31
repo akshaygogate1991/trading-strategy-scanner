@@ -198,7 +198,7 @@ function render() {
   $("todayLabel").textContent = isToday ? (live.status === "done" ? "Today (final)" : "Today (live)") : "Today";
   setTile("tToday", todayNet, isToday ? (live.status === "done" ? "booked" : "booked + open positions at last price") : "no session today");
   const monthVal = pastMonth + (isToday && live.status !== "done" ? todayNet : 0);
-  setTile("tMonth", m || (isToday && live.status !== "done") ? monthVal : null, m ? `${m.days} trading days booked` + (isToday && live.status !== "done" ? " + today live" : "") : "today live only");
+  setTile("tMonth", m || (isToday && live.status !== "done") ? monthVal : null, m ? `${m.days} trading days booked` + (isToday && live.status !== "done" ? " + today live" : "") : (isToday && live.status !== "done" ? "today live only" : "nothing booked yet"));
   const totalVal = data.total + (isToday && live.status !== "done" ? todayNet : 0);
   setTile("tTotal", data.daily.length || isToday ? totalVal : null, `${new Set(data.daily.map((d) => d.day)).size} days booked`);
   $("tSpot").textContent = live && live.spot ? px.format(live.spot) : "–";
