@@ -38,3 +38,5 @@ strategies/
 # research notes describe the seminar strategies' rules: keep them local too
 PROJECT_HANDOFF.md
 RESULTS_31Oct2026.md
+# dashboard feed token (VPS only)
+.dashboard_token

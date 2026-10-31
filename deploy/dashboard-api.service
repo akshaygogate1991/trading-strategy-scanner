@@ -1,0 +1,19 @@
+[Unit]
+Description=Read-only JSON feed of paper trades for the web dashboard
+After=network-online.target
+
+[Service]
+Type=simple
+User=trader
+WorkingDirectory=/home/trader/trading-strategy
+ExecStart=/usr/bin/python3 dashboard_api.py --host 127.0.0.1 --port 8787
+Restart=always
+RestartSec=10
+# read-only: it may not write anywhere
+ProtectSystem=strict
+ProtectHome=read-only
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

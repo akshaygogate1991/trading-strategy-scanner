@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Paper Trades</title>
+<style>
+  :root {
+    --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+    --profit: #2a78d6; --loss: #e34948; --up-text: #006300; --down-text: #d03b3b;
+    --warn-bg: #fff4d6; --warn-ink: #6b4a00; --chip: #f0efec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+      --profit: #3987e5; --loss: #e66767; --up-text: #0ca30c; --down-text: #e66767;
+      --warn-bg: #3a2d0a; --warn-ink: #f5d58a; --chip: #2c2c2a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --profit: #3987e5; --loss: #e66767; --up-text: #0ca30c; --down-text: #e66767;
+    --warn-bg: #3a2d0a; --warn-ink: #f5d58a; --chip: #2c2c2a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 20px 16px 48px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 16px; }
+  h1 { font-size: 20px; margin: 0; }
+  h2 { font-size: 15px; margin: 0 0 10px; }
+  .sub { color: var(--ink-2); font-size: 13px; }
+  .spacer { flex: 1; }
+  button { font: inherit; border: 1px solid var(--border); background: var(--surface); color: var(--ink);
+           border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+  .tile .label { color: var(--ink-2); font-size: 12px; }
+  .tile .value { font-size: 24px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .tile .note { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .pos { color: var(--up-text); } .neg { color: var(--down-text); }
+  .scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { padding: 7px 10px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--grid); }
+  th { color: var(--ink-2); font-weight: 600; font-size: 12px; }
+  th:first-child, td:first-child, .l { text-align: left; }
+  tr:last-child td { border-bottom: none; }
+  .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--chip); font-size: 12px; color: var(--ink-2); }
+  .strat { margin-bottom: 14px; }
+  .strat:last-child { margin-bottom: 0; }
+  .strat-head { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; margin-bottom: 6px; }
+  .strat-head b { font-size: 14px; }
+  .empty { color: var(--muted); padding: 6px 0; }
+  .warn { background: var(--warn-bg); color: var(--warn-ink); border-radius: 10px; padding: 10px 14px; margin-bottom: 16px; }
+  .grid2 { display: grid; grid-template-columns: 1fr; gap: 16px; }
+  @media (min-width: 900px) { .grid2 { grid-template-columns: 1.2fr 1fr; } }
+  .chart { position: relative; }
+  .chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .chart text { fill: var(--muted); font-size: 11px; }
+  .tip { position: absolute; pointer-events: none; background: var(--ink); color: var(--surface); border-radius: 8px;
+         padding: 6px 9px; font-size: 12px; white-space: nowrap; transform: translate(-50%, -110%); display: none; }
+  .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  select { font: inherit; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--ink); }
+  #login { max-width: 360px; margin: 12vh auto; }
+  #login input { width: 100%; font: inherit; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--border);
+                 background: var(--surface); color: var(--ink); margin: 10px 0; }
+  .err { color: var(--down-text); font-size: 13px; min-height: 18px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <form id="login" class="card" hidden>
+    <h1>Paper Trades</h1>
+    <p class="sub">Sensex Directional + Chota Packet Sensex. Paper only, no real orders.</p>
+    <input id="pw" type="password" placeholder="Dashboard password" autocomplete="current-password" required>
+    <div class="err" id="loginErr"></div>
+    <button type="submit">Open dashboard</button>
+  </form>
+
+  <main id="app" hidden>
+    <header>
+      <h1>Paper Trades</h1>
+      <span class="sub" id="status">Loading…</span>
+      <span class="spacer"></span>
+      <button id="refresh" type="button">Refresh</button>
+      <button id="logout" type="button">Log out</button>
+    </header>
+    <div id="warn" class="warn" hidden></div>
+
+    <div class="tiles">
+      <div class="tile"><div class="label" id="todayLabel">Today (live)</div><div class="value" id="tToday">–</div><div class="note" id="tTodayNote"></div></div>
+      <div class="tile"><div class="label">This month</div><div class="value" id="tMonth">–</div><div class="note" id="tMonthNote"></div></div>
+      <div class="tile"><div class="label">Total since start</div><div class="value" id="tTotal">–</div><div class="note" id="tTotalNote"></div></div>
+      <div class="tile"><div class="label">Sensex</div><div class="value" id="tSpot">–</div><div class="note" id="tSpotNote"></div></div>
+    </div>
+
+    <section class="card">
+      <h2 id="liveTitle">Today's positions</h2>
+      <div id="live"></div>
+    </section>
+
+    <div class="grid2">
+      <section class="card">
+        <h2>Month-wise profit / loss (net, after charges)</h2>
+        <div class="chart" id="monthChart"></div>
+        <div class="scroll" style="margin-top:12px"><table id="monthTable"></table></div>
+      </section>
+      <section class="card">
+        <h2>Cumulative net P&amp;L</h2>
+        <div class="chart" id="eqChart"></div>
+      </section>
+    </div>
+
+    <section class="card">
+      <h2>Trade history</h2>
+      <div class="filters">
+        <select id="fStrat"><option value="">All strategies</option></select>
+        <select id="fMonth"><option value="">All months</option></select>
+        <span class="sub" id="histCount"></span>
+      </div>
+      <div class="scroll"><table id="hist"></table></div>
+    </section>
+    <p class="sub">Amounts are paper results with ₹5/order brokerage, all exchange charges and 0.5% slippage per side.
+      "Premium" is entry price × quantity. "Stop" is the current stop-loss (cut-off) price of the leg.</p>
+  </main>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const inr = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 });
+const px = new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const money = (v) => v == null ? "–" : (v > 0 ? "+" : v < 0 ? "−" : "") + "₹" + inr.format(Math.abs(v));
+const cls = (v) => v > 0 ? "pos" : v < 0 ? "neg" : "";
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const store = {
+  get() { try { return localStorage.getItem("dashPw") || ""; } catch { return ""; } },
+  set(v) { try { v ? localStorage.setItem("dashPw", v) : localStorage.removeItem("dashPw"); } catch {} },
+};
+let password = store.get(), data = null, timer = null;
+
+function istNow() {
+  const d = new Date(Date.now() + (330 + new Date().getTimezoneOffset()) * 60000);
+  return { date: d.toISOString().slice(0, 10), mins: d.getHours() * 60 + d.getMinutes(), dow: d.getDay(), d };
+}
+function marketHours() { const n = istNow(); return n.dow >= 1 && n.dow <= 5 && n.mins >= 9 * 60 + 5 && n.mins <= 15 * 60 + 40; }
+
+async function load() {
+  try {
+    const r = await fetch("/api/data", { headers: { "x-dash-password": password }, cache: "no-store" });
+    const body = await r.json().catch(() => ({}));
+    if (r.status === 401) { store.set(""); password = ""; return showLogin("Wrong password"); }
+    if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+    data = body; $("warn").hidden = true; render();
+  } catch (e) {
+    $("warn").hidden = false; $("warn").textContent = `Could not load data: ${e.message}. Showing the last loaded values.`;
+  }
+  clearTimeout(timer);
+  timer = setTimeout(load, marketHours() ? 15000 : 120000);
+}
+
+function showLogin(msg) {
+  clearTimeout(timer);
+  $("app").hidden = true; $("login").hidden = false; $("loginErr").textContent = msg || ""; $("pw").focus();
+}
+$("login").addEventListener("submit", (e) => {
+  e.preventDefault(); password = $("pw").value; store.set(password);
+  $("login").hidden = true; $("app").hidden = false; load();
+});
+$("logout").onclick = () => { store.set(""); password = ""; showLogin(); };
+$("refresh").onclick = load;
+$("fStrat").onchange = $("fMonth").onchange = () => renderHistory();
+
+function render() {
+  const live = data.live, now = istNow();
+  const isToday = live && live.day === now.date;
+  // status line + staleness
+  let status = "No session yet";
+  if (live) {
+    const age = (now.d - new Date(live.updated.replace(" ", "T"))) / 60000;
+    status = `${isToday ? "Today" : "Last session " + live.day} · ${live.status === "done" ? "finished" : "running"} · bar ${live.bar} · updated ${live.updated.slice(11, 16)} IST`;
+    if (isToday && live.status !== "done" && marketHours() && age > 4) {
+      $("warn").hidden = false;
+      $("warn").textContent = `No update from the VPS for ${Math.round(age)} minutes. The paper trader may have stopped: check "journalctl -u paper-trader".`;
+    }
+  }
+  $("status").textContent = status;
+
+  // tiles
+  const month = now.date.slice(0, 7);
+  const m = data.monthly.find((x) => x.month === month);
+  const todayNet = isToday ? live.net : null;
+  const pastMonth = m ? m.total : 0;          // booked days (a finished day is already in here)
+  $("todayLabel").textContent = isToday ? (live.status === "done" ? "Today (final)" : "Today (live)") : "Today";
+  setTile("tToday", todayNet, isToday ? (live.status === "done" ? "booked" : "booked + open positions at last price") : "no session today");
+  const monthVal = pastMonth + (isToday && live.status !== "done" ? todayNet : 0);
+  setTile("tMonth", m || (isToday && live.status !== "done") ? monthVal : null, m ? `${m.days} trading days booked` + (isToday && live.status !== "done" ? " + today live" : "") : "today live only");
+  const totalVal = data.total + (isToday && live.status !== "done" ? todayNet : 0);
+  setTile("tTotal", data.daily.length || isToday ? totalVal : null, `${new Set(data.daily.map((d) => d.day)).size} days booked`);
+  $("tSpot").textContent = live && live.spot ? px.format(live.spot) : "–";
+  $("tSpot").className = "value";
+  $("tSpotNote").textContent = live ? `at ${live.bar}${isToday ? "" : ", " + live.day}` : "";
+
+  renderLive(live, isToday);
+  renderMonths(); renderEquity(); fillFilters(); renderHistory();
+}
+function setTile(id, v, note) {
+  $(id).textContent = money(v); $(id).className = "value " + cls(v); $(id + "Note").textContent = note;
+}
+
+function renderLive(live, isToday) {
+  $("liveTitle").textContent = isToday ? "Today's positions" : (live ? `Last session (${live.day})` : "Positions");
+  if (!live) { $("live").innerHTML = `<div class="empty">The paper trader has not run yet. It starts at 09:05 IST on weekdays.</div>`; return; }
+  $("live").innerHTML = live.strategies.map((s) => {
+    const open = s.open.map((l) => l.state === "wait"
+      ? `<tr><td class="l">${l.side} ${l.kind} ${l.strike}</td><td>${l.qty}</td><td>–</td><td>–</td><td>–</td><td>–</td><td>trigger ${px.format(l.trigger)}</td><td class="l"><span class="chip">waiting</span></td><td>–</td></tr>`
+      : `<tr><td class="l">${l.side} ${l.kind} ${l.strike}</td><td>${l.qty}</td><td>${l.entry_time}</td><td>${px.format(l.entry_px)}</td><td>₹${inr.format(l.premium)}</td><td>${px.format(l.ltp)}</td><td>${l.stop == null ? "–" : px.format(l.stop)}</td><td class="l"><span class="chip">open</span></td><td class="${cls(l.net)}">${money(l.net)}</td></tr>`).join("");
+    const closed = s.closed.map((t) =>
+      `<tr><td class="l">${t.side} ${t.kind} ${t.strike}</td><td>${t.qty}</td><td>${t.entry_time}</td><td>${px.format(t.entry_px)}</td><td>₹${inr.format(t.entry_px * t.qty)}</td><td>${t.exit_time} @ ${px.format(t.exit_px)}</td><td>–</td><td class="l"><span class="chip">${esc(reasonText(t.reason))}</span></td><td class="${cls(t.net)}">${money(t.net)}</td></tr>`).join("");
+    const rows = open + closed;
+    return `<div class="strat"><div class="strat-head"><b>${esc(s.name)}</b><span class="chip">${esc(s.state)}</span>
+      <span class="sub">entry ${s.entry} · exit ${s.exit}${s.overall_sl ? " · overall stop ₹" + inr.format(s.overall_sl) : ""}</span>
+      <span class="spacer"></span><b class="${cls(s.net)}">${money(s.net)}</b></div>
+      ${rows ? `<div class="scroll"><table><tr><th>Leg</th><th>Qty</th><th>Entry time</th><th>Entry price</th><th>Premium</th><th>Last / exit</th><th>Stop</th><th class="l">Status</th><th>Net P&amp;L</th></tr>${rows}</table></div>`
+              : `<div class="empty">${s.state === "before entry" ? "Waiting for entry time " + s.entry : "No position"}</div>`}</div>`;
+  }).join("") || `<div class="empty">No strategy trades today.</div>`;
+}
+function reasonText(r) {
+  return { sl: "stop hit", time: "time exit", target: "target hit", overall_sl: "overall stop", overall_tgt: "overall target", signal_drop: "dropped" }[r] || r;
+}
+
+// ---- charts: plain SVG, diverging profit (blue) / loss (red), one y-axis
+function niceTicks(lo, hi, n = 4) {
+  const span = hi - lo || 1, step0 = span / n, mag = 10 ** Math.floor(Math.log10(step0));
+  const step = [1, 2, 2.5, 5, 10].map((f) => f * mag).find((s) => s >= step0);
+  const ticks = [], top = Math.ceil(hi / step) * step;   // last tick at or above the highest value
+  for (let v = Math.floor(lo / step) * step; v <= top + 1e-9; v += step) ticks.push(Math.round(v));
+  return ticks;
+}
+const short = (v) => (v < 0 ? "−" : "") + "₹" + (Math.abs(v) >= 100000 ? (Math.abs(v) / 100000).toFixed(1) + "L" : Math.abs(v) >= 1000 ? Math.round(Math.abs(v) / 1000) + "k" : Math.round(Math.abs(v)));
+function attachTip(box, targets, html) {
+  const tip = document.createElement("div"); tip.className = "tip"; box.appendChild(tip);
+  targets.forEach((el, i) => {
+    el.addEventListener("pointerenter", () => { tip.innerHTML = html(i); tip.style.display = "block"; });
+    el.addEventListener("pointermove", (e) => { const r = box.getBoundingClientRect(); tip.style.left = (e.clientX - r.left) + "px"; tip.style.top = (e.clientY - r.top) + "px"; });
+    el.addEventListener("pointerleave", () => { tip.style.display = "none"; });
+  });
+}
+
+function renderMonths() {
+  const ms = data.monthly, box = $("monthChart");
+  const strategies = [...new Set(ms.flatMap((m) => Object.keys(m.by_strategy)))];
+  $("monthTable").innerHTML = ms.length
+    ? `<tr><th>Month</th>${strategies.map((s) => `<th>${esc(s.replace("Bada Dhamaka ", ""))}</th>`).join("")}<th>Total</th><th>Days</th></tr>` +
+      [...ms].reverse().map((m) => `<tr><td>${m.month}</td>${strategies.map((s) => `<td class="${cls(m.by_strategy[s])}">${money(m.by_strategy[s] ?? 0)}</td>`).join("")}<td class="${cls(m.total)}"><b>${money(m.total)}</b></td><td>${m.days}</td></tr>`).join("")
+    : "";
+  if (!ms.length) { box.innerHTML = `<div class="empty">No completed trading days yet.</div>`; return; }
+  const W = 560, H = 220, L = 48, R = 8, T = 10, B = 26;
+  const vals = ms.map((m) => m.total), ticks = niceTicks(Math.min(0, ...vals), Math.max(0, ...vals));
+  const lo = ticks[0], hi = ticks[ticks.length - 1], y = (v) => T + (hi - v) / (hi - lo || 1) * (H - T - B);
+  const slot = (W - L - R) / ms.length, bw = Math.min(36, slot * 0.6);
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Monthly net profit and loss">`;
+  ticks.forEach((t) => { svg += `<line x1="${L}" x2="${W - R}" y1="${y(t)}" y2="${y(t)}" stroke="var(--grid)" stroke-width="1"/><text x="${L - 6}" y="${y(t) + 4}" text-anchor="end">${short(t)}</text>`; });
+  ms.forEach((m, i) => {
+    const x = L + slot * i + (slot - bw) / 2, top = y(Math.max(0, m.total)), bot = y(Math.min(0, m.total));
+    const h = Math.max(1, bot - top), up = m.total >= 0, r = Math.min(4, h);
+    // rounded only at the data end, square on the zero baseline
+    const d = up ? `M${x},${bot} V${top + r} Q${x},${top} ${x + r},${top} H${x + bw - r} Q${x + bw},${top} ${x + bw},${top + r} V${bot} Z`
+                 : `M${x},${top} V${bot - r} Q${x},${bot} ${x + r},${bot} H${x + bw - r} Q${x + bw},${bot} ${x + bw},${bot - r} V${top} Z`;
+    svg += `<path d="${d}" fill="var(${up ? "--profit" : "--loss"})"/>`;
+    svg += `<rect class="hit" x="${L + slot * i}" y="${T}" width="${slot}" height="${H - T - B}" fill="transparent"/>`;
+    if (ms.length <= 14 || i % Math.ceil(ms.length / 12) === 0) svg += `<text x="${x + bw / 2}" y="${H - 8}" text-anchor="middle">${monthName(m.month)}</text>`;
+  });
+  svg += `<line x1="${L}" x2="${W - R}" y1="${y(0)}" y2="${y(0)}" stroke="var(--axis)" stroke-width="1"/></svg>`;
+  box.innerHTML = svg;
+  attachTip(box, [...box.querySelectorAll(".hit")], (i) => `<b>${monthName(ms[i].month, true)}</b><br>${money(ms[i].total)} · ${ms[i].days} days`);
+}
+function monthName(m, long) {
+  const [y, mo] = m.split("-"); const n = new Date(+y, +mo - 1, 1).toLocaleString("en-IN", { month: "short" });
+  return long ? `${n} ${y}` : `${n} ${y.slice(2)}`;
+}
+
+function renderEquity() {
+  const box = $("eqChart"), byDay = {};
+  data.daily.forEach((d) => { byDay[d.day] = (byDay[d.day] || 0) + (d.net || 0); });
+  const days = Object.keys(byDay).sort();
+  if (days.length < 2) { box.innerHTML = `<div class="empty">The line appears after two completed trading days.</div>`; return; }
+  let c = 0; const pts = days.map((d) => (c += byDay[d]));
+  const W = 560, H = 220, L = 48, R = 8, T = 10, B = 26;
+  const ticks = niceTicks(Math.min(0, ...pts), Math.max(0, ...pts)), lo = ticks[0], hi = ticks[ticks.length - 1];
+  const x = (i) => L + i / (days.length - 1) * (W - L - R), y = (v) => T + (hi - v) / (hi - lo || 1) * (H - T - B);
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Cumulative net profit">`;
+  ticks.forEach((t) => { svg += `<line x1="${L}" x2="${W - R}" y1="${y(t)}" y2="${y(t)}" stroke="var(${t === 0 ? "--axis" : "--grid"})"/><text x="${L - 6}" y="${y(t) + 4}" text-anchor="end">${short(t)}</text>`; });
+  svg += `<path d="${pts.map((v, i) => `${i ? "L" : "M"}${x(i)},${y(v)}`).join(" ")}" fill="none" stroke="var(--profit)" stroke-width="2" stroke-linejoin="round"/>`;
+  [0, days.length - 1].forEach((i) => { svg += `<text x="${x(i)}" y="${H - 8}" text-anchor="${i ? "end" : "start"}">${days[i]}</text>`; });
+  svg += `<line id="cross" y1="${T}" y2="${H - B}" stroke="var(--axis)" visibility="hidden"/><circle id="dot" r="4" fill="var(--profit)" stroke="var(--surface)" stroke-width="2" visibility="hidden"/>`;
+  svg += `<rect id="eqHit" x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}" fill="transparent"/></svg>`;
+  box.innerHTML = svg;
+  const tip = document.createElement("div"); tip.className = "tip"; box.appendChild(tip);
+  const sv = box.querySelector("svg"), cross = sv.querySelector("#cross"), dot = sv.querySelector("#dot");
+  sv.querySelector("#eqHit").addEventListener("pointermove", (e) => {
+    const r = sv.getBoundingClientRect(), sx = (e.clientX - r.left) / r.width * W;
+    const i = Math.max(0, Math.min(days.length - 1, Math.round((sx - L) / (W - L - R) * (days.length - 1))));
+    cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("visibility", "visible");
+    dot.setAttribute("cx", x(i)); dot.setAttribute("cy", y(pts[i])); dot.setAttribute("visibility", "visible");
+    tip.innerHTML = `<b>${days[i]}</b><br>day ${money(byDay[days[i]])} · total ${money(pts[i])}`; tip.style.display = "block";
+    tip.style.left = (x(i) / W * r.width) + "px"; tip.style.top = (y(pts[i]) / H * r.height) + "px";
+  });
+  sv.querySelector("#eqHit").addEventListener("pointerleave", () => { tip.style.display = "none"; cross.setAttribute("visibility", "hidden"); dot.setAttribute("visibility", "hidden"); });
+}
+
+function fillFilters() {
+  const fill = (sel, values, all) => {
+    const cur = sel.value;
+    sel.innerHTML = `<option value="">${all}</option>` + values.map((v) => `<option${v === cur ? " selected" : ""}>${esc(v)}</option>`).join("");
+  };
+  fill($("fStrat"), [...new Set(data.trades.map((t) => t.strategy))], "All strategies");
+  fill($("fMonth"), [...new Set(data.trades.map((t) => t.day.slice(0, 7)))].sort().reverse(), "All months");
+}
+function renderHistory() {
+  if (!data) return;
+  const s = $("fStrat").value, m = $("fMonth").value;
+  const rows = data.trades.filter((t) => (!s || t.strategy === s) && (!m || t.day.startsWith(m))).reverse();
+  const net = rows.reduce((a, t) => a + (t.net || 0), 0);
+  $("histCount").innerHTML = rows.length ? `${rows.length} leg trades · net <b class="${cls(net)}">${money(net)}</b>` : "";
+  $("hist").innerHTML = rows.length
+    ? `<tr><th>Date</th><th class="l">Strategy</th><th class="l">Leg</th><th>Qty</th><th>Entry</th><th>Entry price</th><th>Premium</th><th>Exit</th><th>Exit price</th><th class="l">Reason</th><th>Charges</th><th>Net</th></tr>` +
+      rows.map((t) => `<tr><td>${t.day}</td><td class="l">${esc(t.strategy.replace("Bada Dhamaka ", ""))}</td><td class="l">${t.side} ${t.kind} ${t.strike}</td><td>${t.qty}</td><td>${t.entry_time}</td><td>${px.format(t.entry_px)}</td><td>₹${inr.format(t.premium)}</td><td>${t.exit_time}</td><td>${px.format(t.exit_px)}</td><td class="l">${esc(reasonText(t.reason))}</td><td>₹${inr.format(t.charges)}</td><td class="${cls(t.net)}">${money(t.net)}</td></tr>`).join("")
+    : `<tr><td class="empty">No trades yet.</td></tr>`;
+}
+
+if (password) { $("app").hidden = false; load(); } else showLogin();
+</script>
+</body>
+</html>

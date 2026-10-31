@@ -1,0 +1,10 @@
+# HTTPS in front of dashboard_api.py. sslip.io turns the IP into a hostname,
+# so Caddy can get a free Let's Encrypt certificate without buying a domain.
+46-225-42-103.sslip.io {
+	handle /api/dashboard {
+		reverse_proxy 127.0.0.1:8787
+	}
+	handle {
+		respond 404
+	}
+}

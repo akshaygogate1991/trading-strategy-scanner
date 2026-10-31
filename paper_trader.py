@@ -20,11 +20,14 @@ Outputs in paper_data/:
   events.log     every entry / exit as it happens
   trades.csv     one row per leg trade, with charges, slippage and net
   daily.csv      one row per strategy per day
+  live.json      the current state (positions, prices, stops, P&L), rewritten every
+                 minute; read by dashboard_api.py for the web dashboard
   bars/DATE.parquet   the day's minute bars (replayable, and our own data set)
 """
 import argparse
 import datetime as dt
 import glob
+import json
 import logging
 import os
 import sys
@@ -199,6 +202,71 @@ class Book:
                 continue
             s.step(k)
             self._report(s, k)
+        if not self.quiet:
+            self.write_live(k)
+
+    def write_live(self, k, status="running"):
+        """Dashboard snapshot. It must never stop the trading, so any error is only logged."""
+        try:
+            self._write_live(k, status)
+        except Exception as e:                  # noqa: BLE001
+            if not getattr(self, "_live_warned", False):
+                self._live_warned = True
+                log(f"live.json not written ({type(e).__name__}: {e}); trading continues")
+
+    def _write_live(self, k, status):
+        """paper_data/live.json: every position with entry, last price, stop and P&L."""
+        d = self.sims[0].day if self.sims else None
+        spot = None
+        if d is not None and d.spot_open is not None and not np.isnan(d.spot_open[k]):
+            spot = float(d.spot_open[k])
+        out = dict(day=self.day, expiry=self.expiry, status=status, bar=ab.hhmm(k),
+                   updated=f"{dt.datetime.now(IST):%Y-%m-%d %H:%M:%S}", spot=spot, strategies=[])
+        for s in self.sims:
+            legs, open_net = [], 0.0
+            for g in s.legs:
+                c = g["cfg"]
+                if g["state"] not in ("wait", "open"):
+                    continue
+                leg = dict(kind=c["kind"], side="BUY" if c["side"] > 0 else "SELL",
+                           strike=float(s.day.strike[g["c"]]), qty=c["lots"] * self.lot, state=g["state"])
+                if g["state"] == "wait":
+                    leg["trigger"] = round(float(g["trig"]), 2)
+                else:
+                    ltp = float(s.day.C[g["c"], k])
+                    t = ab.add_costs(dict(entry_px=g["px"], exit_px=ltp, side=c["side"], qty=leg["qty"],
+                                          gross=c["side"] * (ltp - g["px"]) * leg["qty"]), TICKER, SLIP_PCT)
+                    open_net += t["net"]
+                    leg.update(entry_time=ab.hhmm(g["k0"]), entry_px=round(float(g["px"]), 2),
+                               premium=round(float(g["px"]) * leg["qty"], 2), ltp=round(ltp, 2),
+                               stop=None if g.get("sl_level") is None else round(float(g["sl_level"]), 2),
+                               gross=round(t["gross"], 2), net=round(t["net"], 2))
+                legs.append(leg)
+            closed = [dict(kind=t["kind"], side="BUY" if t["side"] > 0 else "SELL", strike=float(t["strike"]),
+                           qty=t["qty"], entry_time=ab.hhmm(t["entry_min"]), entry_px=round(float(t["entry_px"]), 2),
+                           exit_time=ab.hhmm(t["exit_min"]), exit_px=round(float(t["exit_px"]), 2),
+                           reason=t["reason"], gross=round(t["gross"], 2),
+                           net=round(t["net"] if "net" in t else ab.add_costs(t, TICKER, SLIP_PCT)["net"], 2))
+                      for t in s.trades]
+            state = ("done" if s.done else "open" if any(l["state"] == "open" for l in legs)
+                     else "waiting" if legs else "before entry" if k < s.entry else "flat")
+            out["strategies"].append(dict(
+                name=s.st["name"], entry=ab.hhmm(s.entry), exit=ab.hhmm(s.exit), state=state,
+                overall_sl=s.osl, open=legs, closed=closed,
+                net=round(sum(t["net"] for t in closed) + open_net, 2)))
+        out["net"] = round(sum(x["net"] for x in out["strategies"]), 2)
+        os.makedirs(OUT, exist_ok=True)
+        tmp = os.path.join(OUT, "live.json.tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(out, fh, indent=1)
+        for attempt in range(5):        # atomic: readers never see half a file
+            try:
+                os.replace(tmp, os.path.join(OUT, "live.json"))
+                return
+            except PermissionError:     # Windows: a reader or the indexer holds it for a moment
+                if attempt == 4:
+                    raise
+                time.sleep(0.05)
 
     def _report(self, s, k):
         n_seen, states = self._seen[id(s)]
@@ -248,6 +316,8 @@ class Book:
             if data:
                 p = os.path.join(OUT, name)
                 pd.DataFrame(data).to_csv(p, mode="a", header=not os.path.exists(p), index=False)
+        last = max([t["exit_min"] for s in self.sims for t in s.trades] + [0])
+        self.write_live(last, status="done")
         return daily
 
 
