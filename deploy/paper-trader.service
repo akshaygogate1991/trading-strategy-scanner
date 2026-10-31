@@ -1,0 +1,19 @@
+[Unit]
+Description=Sensex paper trader (no orders - logs paper trades only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=trader
+WorkingDirectory=/home/trader/trading-strategy
+ExecStart=/home/trader/trading-strategy/.venv/bin/python paper_trader.py
+# a crash mid-day restarts in 30 s and resumes from paper_data/bars/<day>.partial.parquet
+Restart=on-failure
+RestartSec=30
+# hard stop after the market closes
+RuntimeMaxSec=8h
+Environment=PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8
+
+[Install]
+WantedBy=multi-user.target

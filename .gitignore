@@ -19,7 +19,22 @@ logs/
 # 690 KB of CSVs slows every Streamlit Cloud deploy for no benefit.
 data/
 sma_data/
+nifty_months/
+nifty_fut_data/
+bn_fut_data/
+opt_check_data/
+rsi_data/
+rsi_stock_data/
+vix_data/
 ema_elliott_mask.json
 *_events.csv
 *_trades.csv
 *_analysis.csv
+hf_data/
+paper_data/
+paper_data_replay/
+# seminar strategies: copied to the VPS by scp, never published
+strategies/
+# research notes describe the seminar strategies' rules: keep them local too
+PROJECT_HANDOFF.md
+RESULTS_31Oct2026.md
