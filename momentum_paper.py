@@ -31,6 +31,7 @@ import json
 import math
 import os
 import pickle
+import time
 from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
@@ -40,6 +41,7 @@ CAPITAL = 500_000
 N_PICKS = 20
 UNIVERSE = 200
 MIN_PRICE = 20
+MIN_STOCKS = 1700                  # a full download has ~2,000 stocks with a year of prices
 INDEX = "^NSEI"
 IST = timezone(timedelta(hours=5, minutes=30))
 EQUITY_URL = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
@@ -75,16 +77,33 @@ class Source:
                         out[t] = d
             return out
         import yfinance as yf
-        out = {}
-        for i in range(0, len(tickers), 200):
-            part = tickers[i:i + 200]
-            raw = yf.download(part, period=period, auto_adjust=True, group_by="ticker",
-                              progress=False, threads=True)
-            for t in part:
-                if t in raw.columns.get_level_values(0):
-                    d = raw[t].dropna(subset=["Close"])
+        out, todo = {}, list(tickers)
+        # Yahoo silently drops part of a big batch when it throttles (seen on the VPS:
+        # 1,382 of ~2,000 stocks), so retry the missing ones in smaller batches
+        for attempt, size in enumerate((200, 50, 20)):
+            if attempt:
+                time.sleep(20)
+            failed = []
+            for i in range(0, len(todo), size):
+                part = todo[i:i + size]
+                try:
+                    raw = yf.download(part, period=period, auto_adjust=True, group_by="ticker",
+                                      progress=False, threads=True)
+                except Exception as e:
+                    print(f"  download error ({e}); will retry")
+                    failed += part
+                    continue
+                for t in part:
+                    d = raw[t].dropna(subset=["Close"]) if t in raw.columns.get_level_values(0) else []
                     if len(d):
                         out[t] = d[["Open", "High", "Low", "Close", "Volume"]]
+                    else:
+                        failed.append(t)
+            todo = failed
+            if len(tickers) > 50:
+                print(f"  pass {attempt + 1}: {len(out)} of {len(tickers)} have data, {len(todo)} missing")
+            if not todo:
+                break
         return out
 
     def symbols(self) -> list[str]:
@@ -235,12 +254,20 @@ def run_day(src: Source, data_dir: str, today: date, dry_run: bool = False) -> s
     msg = []
     if dry_run or month not in state["months"]:
         frames = src.bars(src.symbols(), "2y")
+        enough = sum(len(d) >= 260 for d in frames.values())
+        if enough < MIN_STOCKS:
+            note = (f"only {enough} stocks came back with a year of prices (need {MIN_STOCKS}); "
+                    f"picks would be wrong")
+            if not dry_run:
+                return f"{today}: {note}. Not rebalancing; will try again at the next run"
+            print("WARNING:", note)
         # the previous month-end close; a dry run just uses the latest close
         cut = pd.Timestamp(today) if dry_run else pd.Timestamp(today.replace(day=1)) - pd.Timedelta(days=1)
         signal_day = max(d for d in idx.index if d <= cut)
         picks = select(frames, signal_day)
         if dry_run:
-            return (f"picks from the close of {signal_day.date()} ({len(frames)} stocks with data): "
+            return (f"picks from the close of {signal_day.date()} ({len(frames)} stocks with data, "
+                    f"{enough} with a year of prices): "
                     + ", ".join(f"{t[:-3]} {r * 100:+.0f}%" for t, r in picks))
         opens = {t: float(d["Open"].iloc[-1]) for t, d in frames.items()
                  if d.index[-1].date() == today and d["Open"].iloc[-1] > 0}
