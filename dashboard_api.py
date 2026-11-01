@@ -1,5 +1,8 @@
 """Read-only JSON feed of the paper trades, for the Vercel dashboard.
 
+Includes the Sensex paper trades (trades.csv, daily.csv, live.json) and the
+monthly momentum paper portfolio (momentum.json, momentum_trades.csv).
+
 Serves ONE endpoint, GET /api/dashboard, and only with the right token:
     Authorization: Bearer <token>
 The token is read from the file .dashboard_token next to this script (git-ignored,
@@ -66,16 +69,21 @@ def build(data_dir):
     monthly = [dict(month=m, by_strategy={k: round(v, 2) for k, v in s.items()},
                     total=round(sum(s.values()), 2), days=len({r["day"] for r in daily if r["day"][:7] == m}))
                for m, s in sorted(months.items())]
-    live = None
-    p = os.path.join(data_dir, "live.json")
-    if os.path.exists(p):
-        try:
-            with open(p, encoding="utf-8") as fh:
-                live = json.load(fh)
-        except (OSError, ValueError):
-            live = None
-    return dict(live=live, trades=trades[-500:], daily=daily, monthly=monthly,
-                total=round(sum(r["net"] or 0.0 for r in daily), 2))
+    momentum = read_json(os.path.join(data_dir, "momentum.json"))
+    if momentum is not None:
+        momentum["trades"] = read_csv(os.path.join(data_dir, "momentum_trades.csv"))[-200:]
+    return dict(live=read_json(os.path.join(data_dir, "live.json")), trades=trades[-500:], daily=daily,
+                monthly=monthly, total=round(sum(r["net"] or 0.0 for r in daily), 2), momentum=momentum)
+
+
+def read_json(path):
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
 
 
 def make_handler(token, data_dir):

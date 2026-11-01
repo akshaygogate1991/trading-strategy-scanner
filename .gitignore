@@ -26,6 +26,7 @@ opt_check_data/
 rsi_data/
 rsi_stock_data/
 vix_data/
+swing_data/
 ema_elliott_mask.json
 *_events.csv
 *_trades.csv

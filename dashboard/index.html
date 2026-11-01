@@ -76,7 +76,7 @@
 <div class="wrap">
   <form id="login" class="card" hidden>
     <h1>Paper Trades</h1>
-    <p class="sub">Sensex Directional + Chota Packet Sensex. Paper only, no real orders.</p>
+    <p class="sub">Sensex Directional + Chota Packet Sensex, and a monthly momentum portfolio. Paper only, no real orders.</p>
     <input id="pw" type="password" placeholder="Dashboard password" autocomplete="current-password" required>
     <div class="err" id="loginErr"></div>
     <button type="submit">Open dashboard</button>
@@ -117,7 +117,12 @@
     </div>
 
     <section class="card">
-      <h2>Trade history</h2>
+      <div class="strat-head"><h2 style="margin:0">Momentum swing (paper, monthly)</h2><span class="spacer"></span><span class="sub" id="momUpdated"></span></div>
+      <div id="mom"></div>
+    </section>
+
+    <section class="card">
+      <h2>Sensex trade history</h2>
       <div class="filters">
         <select id="fStrat"><option value="">All strategies</option></select>
         <select id="fMonth"><option value="">All months</option></select>
@@ -125,8 +130,9 @@
       </div>
       <div class="scroll"><table id="hist"></table></div>
     </section>
-    <p class="sub">Amounts are paper results with ₹5/order brokerage, all exchange charges and 0.5% slippage per side.
-      "Premium" is entry price × quantity. "Stop" is the current stop-loss (cut-off) price of the leg.</p>
+    <p class="sub">Sensex amounts are paper results with ₹5/order brokerage, all exchange charges and 0.5% slippage per side.
+      "Premium" is entry price × quantity. "Stop" is the current stop-loss (cut-off) price of the leg.
+      Momentum amounts include delivery charges (STT, stamp, DP, ₹5/order) and 0.1% slippage per side.</p>
   </main>
 </div>
 
@@ -206,7 +212,43 @@ function render() {
   $("tSpotNote").textContent = live ? `at ${live.bar}${isToday ? "" : ", " + live.day}` : "";
 
   renderLive(live, isToday);
-  renderMonths(); renderEquity(); fillFilters(); renderHistory();
+  renderMonths(); renderEquity(); renderMomentum(); fillFilters(); renderHistory();
+}
+
+function renderMomentum() {
+  const m = data.momentum, box = $("mom");
+  if (!m) {
+    $("momUpdated").textContent = "";
+    box.innerHTML = `<div class="empty">Not started yet. The first paper buys happen at the first weekday evening run (17:45 IST).</div>`;
+    return;
+  }
+  $("momUpdated").textContent = `prices of ${m.as_of} · updated ${m.updated.slice(11)} IST`;
+  const pct = (v) => v == null ? "–" : (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(2) + "%";
+  const thisMonth = m.months.length ? m.months[m.months.length - 1] : null;
+  const tile = (label, value, c, note) => `<div class="tile"><div class="label">${label}</div><div class="value ${c}">${value}</div><div class="note">${note}</div></div>`;
+  const vsNifty = m.nifty_pct == null ? "" : `Nifty ${pct(m.nifty_pct)} over the same time`;
+  let html = `<div class="tiles">` +
+    tile("Portfolio value", "₹" + inr.format(m.value), "", `started ${m.start} with ₹${inr.format(m.capital)}`) +
+    tile("Total profit / loss", money(m.total_pnl), cls(m.total_pnl), `${pct(m.total_pct)} · ${vsNifty}`) +
+    tile("This month", thisMonth ? pct(thisMonth.ret_pct) : "–", cls(thisMonth && thisMonth.ret_pct), thisMonth && thisMonth.nifty_pct != null ? `Nifty ${pct(thisMonth.nifty_pct)}` : "") +
+    tile("Cash", "₹" + inr.format(m.cash), "", `${m.holdings.length} stocks held · picks from ${m.signal_day} close`) + `</div>`;
+  html += m.holdings.length
+    ? `<div class="scroll"><table><tr><th>Stock</th><th>Qty</th><th>Bought on</th><th>Buy price</th><th>Last price</th><th>Value</th><th>P&amp;L</th><th>P&amp;L %</th></tr>` +
+      m.holdings.map((h) => `<tr><td class="l">${esc(h.ticker)}</td><td>${h.qty}</td><td>${h.entry_day}</td><td>${px.format(h.entry_px)}</td><td>${px.format(h.last_px)}</td><td>₹${inr.format(h.value)}</td><td class="${cls(h.pnl)}">${money(h.pnl)}</td><td class="${cls(h.pnl_pct)}">${pct(h.pnl_pct)}</td></tr>`).join("") + `</table></div>`
+    : `<div class="empty">No stocks held.</div>`;
+  if (m.months.length) {
+    html += `<h2 style="margin-top:16px">Month by month</h2><div class="scroll"><table><tr><th>Month</th><th>Portfolio</th><th>Nifty 50</th><th>Difference</th><th>Value at month end</th></tr>` +
+      [...m.months].reverse().map((r) => { const diff = r.nifty_pct == null ? null : r.ret_pct - r.nifty_pct;
+        return `<tr><td>${monthName(r.month, true)}</td><td class="${cls(r.ret_pct)}">${pct(r.ret_pct)}</td><td class="${cls(r.nifty_pct)}">${pct(r.nifty_pct)}</td><td class="${cls(diff)}">${pct(diff)}</td><td>₹${inr.format(r.value)}</td></tr>`; }).join("") + `</table></div>`;
+  }
+  const tr = (m.trades || []).slice().reverse();
+  if (tr.length) {
+    html += `<details style="margin-top:12px"><summary class="sub">Paper buys and sells (${tr.length})</summary><div class="scroll"><table><tr><th>Date</th><th class="l">Stock</th><th class="l">Side</th><th>Qty</th><th>Price</th><th>Value</th><th>Charges</th><th>P&amp;L (sells)</th></tr>` +
+      tr.map((t) => { const pnl = t.pnl === "" ? null : +t.pnl;
+        return `<tr><td>${t.day}</td><td class="l">${esc(t.ticker)}</td><td class="l">${esc(t.side)}</td><td>${t.qty}</td><td>${px.format(+t.price)}</td><td>₹${inr.format(+t.value)}</td><td>₹${inr.format(+t.charges)}</td><td class="${cls(pnl)}">${pnl == null ? "–" : money(pnl)}</td></tr>`; }).join("") + `</table></div></details>`;
+  }
+  html += `<p class="sub" style="margin:10px 0 0">${esc(m.rule)} Backtest: about 26% a year but falls of up to 34%, and the edge was only clear from 2020. Paper tracking only.</p>`;
+  box.innerHTML = html;
 }
 function setTile(id, v, note) {
   $(id).textContent = money(v); $(id).className = "value " + cls(v); $(id + "Note").textContent = note;

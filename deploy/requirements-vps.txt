@@ -1,4 +1,4 @@
-# Only what paper_trader.py needs on the VPS (no streamlit / yfinance)
+# What paper_trader.py and momentum_paper.py need on the VPS (no streamlit)
 pandas>=2.2
 numpy>=1.26
 pyarrow>=15
@@ -8,3 +8,4 @@ pyotp>=2.9
 logzero>=1.7
 websocket-client>=1.6
 tomli>=2.0; python_version < "3.11"
+yfinance>=0.2.40
