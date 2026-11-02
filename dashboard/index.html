@@ -71,13 +71,21 @@
   #login input { width: 100%; font: inherit; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--border);
                  background: var(--surface); color: var(--ink); margin: 10px 0; }
   .err { color: var(--down-text); font-size: 13px; min-height: 18px; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+  .tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 8px 12px;
+                 color: var(--ink-2); flex: 0 1 auto; text-align: left; }
+  .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--ink); font-weight: 600; }
+  .side-BUY { color: var(--up-text); font-weight: 600; } .side-SELL { color: var(--down-text); font-weight: 600; }
+  .bar { position: relative; height: 8px; border-radius: 4px; background: var(--grid); min-width: 90px; }
+  .bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: var(--profit); }
+  .bar b { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--axis); }
 </style>
 </head>
 <body>
 <div class="wrap">
   <form id="login" class="card" hidden>
     <h1>Paper Trades</h1>
-    <p class="sub">Sensex Directional + Chota Packet Sensex, and a monthly momentum portfolio. Paper only, no real orders.</p>
+    <p class="sub">Sensex Directional + Chota Packet Sensex, a monthly momentum portfolio, and Kronos AI paper trades. Paper only, no real orders.</p>
     <input id="pw" type="password" placeholder="Dashboard password" autocomplete="current-password" required>
     <div class="err" id="loginErr"></div>
     <button type="submit">Open dashboard</button>
@@ -92,7 +100,12 @@
       <button id="logout" type="button">Log out</button>
     </header>
     <div id="warn" class="warn" hidden></div>
+    <nav class="tabs" role="tablist">
+      <button type="button" role="tab" data-tab="main" aria-selected="true">Sensex + Momentum</button>
+      <button type="button" role="tab" data-tab="kronos" aria-selected="false">Paper Trades with Kronos</button>
+    </nav>
 
+    <div id="tab-main">
     <h2>Both Sensex strategies together</h2>
     <div class="tiles">
       <div class="tile"><div class="label" id="todayLabel">Today (live)</div><div class="value" id="tToday">–</div><div class="note" id="tTodayNote"></div></div>
@@ -123,6 +136,34 @@
     <p class="sub">Sensex amounts are paper results with ₹5/order brokerage, all exchange charges and 0.5% slippage per side.
       "Premium" is entry price × quantity. "Stop" is the current stop-loss (cut-off) price of the leg.
       Momentum amounts include delivery charges (STT, stamp, DP, ₹5/order) and 0.1% slippage per side.</p>
+    </div>
+
+    <div id="tab-kronos" hidden>
+      <div class="warn">Experiment, paper only. Kronos is an AI model trained on 12 billion candles (AAAI 2026).
+        <span id="kNote"></span></div>
+      <section class="card">
+        <div class="strat-head"><h2 style="margin:0">Next session: Kronos signals</h2><span class="spacer"></span><span class="sub" id="kUpdated"></span></div>
+        <div id="kSignals"></div>
+      </section>
+      <h2>Kronos futures trades (1 lot each of Nifty, Bank Nifty, Sensex)</h2>
+      <div class="tiles" id="kTiles"></div>
+      <div class="grid2">
+        <section class="card"><h2>Month-wise</h2><div id="kMonths"></div></section>
+        <section class="card"><h2>By index</h2><div id="kByIndex"></div></section>
+      </div>
+      <section class="card">
+        <div class="strat-head"><h2 style="margin:0">Trade history</h2><select id="kMonthSel"></select><span class="sub" id="kHistCount"></span></div>
+        <div class="scroll"><table id="kHist"></table></div>
+      </section>
+      <section class="card">
+        <h2>Sensex Directional with Kronos picking the side</h2>
+        <p class="sub" style="margin-top:0">Same paper trades as the first tab, but on days Kronos says BUY only the sold put is kept,
+          on SELL days only the sold call, otherwise both. Approximate: the overall stop is not re-run.</p>
+        <div id="kDir"></div>
+      </section>
+      <p class="sub">Futures amounts use the index price as the futures price, 0.015% charges + slippage per side and ₹5/order.
+        Signals are made after each close (weekday evening run), traded at the next session's open and closed at its close.</p>
+    </div>
   </main>
 </div>
 
@@ -169,6 +210,17 @@ $("login").addEventListener("submit", (e) => {
 });
 $("logout").onclick = () => { store.set(""); password = ""; showLogin(); };
 $("refresh").onclick = load;
+let tab = location.hash === "#kronos" ? "kronos" : "main";
+function showTab(t) {
+  tab = t;
+  document.querySelectorAll(".tabs button").forEach((b) => b.setAttribute("aria-selected", b.dataset.tab === t));
+  $("tab-main").hidden = t !== "main"; $("tab-kronos").hidden = t !== "kronos";
+  history.replaceState(null, "", t === "kronos" ? "#kronos" : location.pathname);
+}
+document.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => showTab(b.dataset.tab));
+window.addEventListener("hashchange", () => showTab(location.hash === "#kronos" ? "kronos" : "main"));
+showTab(tab);
+$("kMonthSel").onchange = () => renderKronosHistory();
 // month filter of each strategy's trade history
 $("strats").addEventListener("change", (e) => {
   if (e.target.matches("select[data-strat]")) renderHistory(e.target.dataset.strat, e.target.value);
@@ -205,7 +257,75 @@ function render() {
   $("tSpotNote").textContent = live ? `at ${live.bar}${isToday ? "" : ", " + live.day}` : "";
 
   renderStrategies(live, isToday);
-  renderMonths(); renderEquity(); renderMomentum();
+  renderMonths(); renderEquity(); renderMomentum(); renderKronos();
+}
+
+// ---- Kronos tab
+const KR_ORDER = ["NIFTY", "BANKNIFTY", "SENSEX"];
+const sideText = (s) => s === "NONE" ? "no trade" : s;
+function renderKronos() {
+  const k = data.kronos;
+  if (!k) {
+    $("kUpdated").textContent = "";
+    $("kSignals").innerHTML = `<div class="empty">Not started yet. The first signals are made at the first weekday evening run (17:50 IST).</div>`;
+    ["kTiles", "kMonths", "kByIndex", "kDir"].forEach((id) => { $(id).innerHTML = ""; });
+    $("kHist").innerHTML = ""; $("kMonthSel").innerHTML = ""; $("kHistCount").textContent = "";
+    return;
+  }
+  $("kNote").textContent = k.rule;
+  $("kUpdated").textContent = `updated ${k.updated.slice(0, 16)} IST`;
+  const pct = (v) => v == null ? "–" : (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(2) + "%";
+  $("kSignals").innerHTML = k.latest.length
+    ? `<div class="scroll"><table><tr><th class="l">Index</th><th>After close of</th><th>Close</th><th class="l">Kronos P(up)</th><th>Up / flat / down paths</th><th>Average predicted move</th><th class="l">Signal</th><th>Traded on</th></tr>` +
+      k.latest.map((s) => { const p = +s.p_up;
+        return `<tr><td class="l">${esc(s.sym)}</td><td>${s.made}</td><td>${px.format(+s.last_close)}</td>
+          <td class="l"><div style="display:flex;gap:8px;align-items:center"><div class="bar"><i style="width:${p * 100}%"></i><b style="left:40%"></b><b style="left:60%"></b></div>${Math.round(p * 100)}%</div></td>
+          <td>${s.n_up} / ${s.n_flat} / ${s.n_down}</td><td class="${cls(+s.pred_ret)}">${pct(+s.pred_ret)}</td>
+          <td class="l"><span class="side-${s.side}">${sideText(s.side)}</span></td><td>${s.settled || "next session"}</td></tr>`; }).join("") +
+      `</table></div><p class="sub" style="margin:8px 0 0">Kronos imagines ${k.samples} possible next candles from the last ${k.lookback} daily candles. The two marks on each bar are the 40% and 60% lines.</p>`
+    : `<div class="empty">No signal yet.</div>`;
+
+  const tr = k.trades, byDay = {};
+  tr.forEach((t) => { byDay[t.day] = (byDay[t.day] || 0) + (t.net || 0); });
+  const days = Object.keys(byDay).sort(), month = istNow().date.slice(0, 7), last = days[days.length - 1];
+  const sum = (a) => a.reduce((x, y) => x + y, 0);
+  const tile = (label, v, note, raw) => `<div class="tile"><div class="label">${label}</div><div class="value ${raw == null ? cls(v) : ""}">${raw ?? money(v)}</div><div class="note">${note}</div></div>`;
+  const wins = tr.filter((t) => (t.points || 0) > 0).length, mDays = days.filter((d) => d.startsWith(month));
+  $("kTiles").innerHTML =
+    tile(last === istNow().date ? "Today" : "Last session", last ? byDay[last] : null, last ? `${last} · ${tr.filter((t) => t.day === last).length} trades` : "no trades yet") +
+    tile("This month", mDays.length ? sum(mDays.map((d) => byDay[d])) : null, `${mDays.length} sessions`) +
+    tile("Total since start", days.length ? sum(Object.values(byDay)) : null, k.start ? `since ${k.start}` : "") +
+    tile("Right direction", null, `${wins} of ${tr.length} trades`, tr.length ? Math.round(wins / tr.length * 100) + "%" : "–");
+  $("kMonths").innerHTML = monthTableHtml(days.map((d) => ({ day: d, net: byDay[d] })));
+  $("kByIndex").innerHTML = tr.length
+    ? `<div class="scroll"><table><tr><th class="l">Index</th><th>Trades</th><th>Right direction</th><th>Points</th><th>Net P&amp;L</th></tr>` +
+      KR_ORDER.map((sym) => { const t = tr.filter((x) => x.sym === sym), n = sum(t.map((x) => x.net || 0)), pts = sum(t.map((x) => x.points || 0));
+        return `<tr><td class="l">${sym}</td><td>${t.length}</td><td>${t.length ? Math.round(t.filter((x) => x.points > 0).length / t.length * 100) + "%" : "–"}</td><td class="${cls(pts)}">${px.format(pts)}</td><td class="${cls(n)}">${money(n)}</td></tr>`; }).join("") + `</table></div>`
+    : `<div class="empty">No completed trades yet.</div>`;
+  const months = [...new Set(tr.map((t) => t.day.slice(0, 7)))].sort().reverse(), sel = $("kMonthSel").value;
+  $("kMonthSel").innerHTML = `<option value="">All months</option>` + months.map((m) => `<option${m === sel ? " selected" : ""}>${m}</option>`).join("");
+  renderKronosHistory();
+
+  const dir = k.directional || [];
+  if (!dir.length) { $("kDir").innerHTML = `<div class="empty">Appears after the first Sensex Directional day that has a Kronos signal.</div>`; return; }
+  const o = sum(dir.map((r) => r.original || 0)), kr = sum(dir.map((r) => r.kronos || 0));
+  const dirSide = (s) => s === "BUY" ? "BUY (put only)" : s === "SELL" ? "SELL (call only)" : s === "NONE" ? "no trade (both legs)" : s;
+  $("kDir").innerHTML = `<div class="tiles">` + tile("Directional as it is", o, `${dir.length} days`) +
+    tile("With Kronos picking the side", kr, `${dir.filter((r) => r.side === "BUY" || r.side === "SELL").length} days one side only`) +
+    tile("Difference", kr - o, kr >= o ? "Kronos helped" : "Kronos hurt") + `</div>` +
+    `<div class="scroll"><table><tr><th>Date</th><th class="l">Kronos</th><th>P(up)</th><th>Directional</th><th>With Kronos</th><th>Difference</th></tr>` +
+    [...dir].reverse().map((r) => `<tr><td>${r.day}</td><td class="l"><span class="side-${r.side}">${dirSide(r.side)}</span></td><td>${r.p_up == null ? "–" : Math.round(r.p_up * 100) + "%"}</td><td class="${cls(r.original)}">${money(r.original)}</td><td class="${cls(r.kronos)}">${money(r.kronos)}</td><td class="${cls(r.kronos - r.original)}">${money(r.kronos - r.original)}</td></tr>`).join("") +
+    `</table></div>`;
+}
+function renderKronosHistory() {
+  if (!data || !data.kronos) return;
+  const m = $("kMonthSel").value, rows = data.kronos.trades.filter((t) => !m || t.day.startsWith(m)).reverse();
+  const net = rows.reduce((a, t) => a + (t.net || 0), 0);
+  $("kHistCount").innerHTML = rows.length ? `${rows.length} trades · net <b class="${cls(net)}">${money(net)}</b>` : "";
+  $("kHist").innerHTML = rows.length
+    ? `<tr><th>Date</th><th class="l">Index</th><th class="l">Side</th><th>P(up)</th><th>Qty</th><th>Open (entry)</th><th>Close (exit)</th><th>Points</th><th>Charges</th><th>Net</th></tr>` +
+      rows.map((t) => `<tr><td>${t.day}</td><td class="l">${esc(t.sym)}</td><td class="l"><span class="side-${t.side}">${t.side}</span></td><td>${Math.round(t.p_up * 100)}%</td><td>${t.qty}</td><td>${px.format(t.entry)}</td><td>${px.format(t.exit)}</td><td class="${cls(t.points)}">${px.format(t.points)}</td><td>₹${inr.format(t.charges)}</td><td class="${cls(t.net)}">${money(t.net)}</td></tr>`).join("")
+    : `<tr><td class="empty">No trades yet.</td></tr>`;
 }
 
 function renderMomentum() {

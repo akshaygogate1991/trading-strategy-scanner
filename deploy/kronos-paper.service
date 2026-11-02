@@ -1,0 +1,13 @@
+[Unit]
+Description=Kronos AI paper trades on Nifty, Bank Nifty, Sensex (no orders - paper only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=trader
+WorkingDirectory=/home/trader/trading-strategy
+Environment=KRONOS_DIR=/home/trader/Kronos PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8
+ExecStart=/home/trader/trading-strategy/.venv/bin/python kronos_paper.py
+# three forecasts take about a minute on the CPU; the first run also downloads the model (~100 MB)
+TimeoutStartSec=20min

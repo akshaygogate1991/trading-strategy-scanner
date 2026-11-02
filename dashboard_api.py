@@ -73,7 +73,44 @@ def build(data_dir):
     if momentum is not None:
         momentum["trades"] = read_csv(os.path.join(data_dir, "momentum_trades.csv"))[-200:]
     return dict(live=read_json(os.path.join(data_dir, "live.json")), trades=trades[-500:], daily=daily,
-                monthly=monthly, total=round(sum(r["net"] or 0.0 for r in daily), 2), momentum=momentum)
+                monthly=monthly, total=round(sum(r["net"] or 0.0 for r in daily), 2), momentum=momentum,
+                kronos=kronos(data_dir, trades))
+
+
+def kronos(data_dir, trades):
+    """Kronos paper futures trades, its signals, and Sensex Directional with Kronos picking the side.
+
+    Side rule for Directional (it sells a call and a put): Kronos BUY -> keep only the
+    put legs (a rising market hurts the sold call); SELL -> keep only the call legs;
+    no signal -> keep both. Approximate: the overall stop of the real run is not re-simulated.
+    """
+    snap = read_json(os.path.join(data_dir, "kronos.json"))
+    if snap is None:
+        return None
+    signals = read_csv(os.path.join(data_dir, "kronos_signals.csv"))
+    snap["signals"] = signals[-300:]
+    snap["trades"] = [dict(r, **{k: num(r[k]) for k in ("entry", "exit", "points", "gross", "charges", "net", "p_up")},
+                           qty=int(float(r["qty"])))
+                      for r in read_csv(os.path.join(data_dir, "kronos_trades.csv"))][-500:]
+    side_by_day = {r["settled"]: r for r in signals if r["sym"] == "SENSEX" and r["settled"]}
+    by_day = defaultdict(list)
+    for t in trades:
+        if t["strategy"] == "Sensex Directional":
+            by_day[t["day"]].append(t)
+    rows = []
+    first = min(side_by_day) if side_by_day else None
+    for day in sorted(by_day):
+        if first is None or day < first:          # before Kronos started there is nothing to compare
+            continue
+        sig = side_by_day.get(day)
+        side = sig["side"] if sig else "NONE"
+        keep = {"BUY": {"PE"}, "SELL": {"CE"}}.get(side, {"CE", "PE"})
+        legs = by_day[day]
+        rows.append(dict(day=day, side=side if sig else "no signal", p_up=num(sig["p_up"]) if sig else None,
+                         original=num(sum(t["net"] or 0 for t in legs)),
+                         kronos=num(sum(t["net"] or 0 for t in legs if t["kind"] in keep))))
+    snap["directional"] = rows
+    return snap
 
 
 def read_json(path):

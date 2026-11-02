@@ -1,0 +1,9 @@
+[Unit]
+Description=Run the Kronos paper trades every weekday evening (IST), after Yahoo has the day's bar
+
+[Timer]
+OnCalendar=Mon..Fri 17:55 Asia/Kolkata
+Persistent=true
+
+[Install]
+WantedBy=timers.target
