@@ -247,6 +247,8 @@ function renderMomentum() {
       tr.map((t) => { const pnl = t.pnl === "" ? null : +t.pnl;
         return `<tr><td>${t.day}</td><td class="l">${esc(t.ticker)}</td><td class="l">${esc(t.side)}</td><td>${t.qty}</td><td>${px.format(+t.price)}</td><td>₹${inr.format(+t.value)}</td><td>₹${inr.format(+t.charges)}</td><td class="${cls(pnl)}">${pnl == null ? "–" : money(pnl)}</td></tr>`; }).join("") + `</table></div></details>`;
   }
+  const listAge = m.candidates_made ? (Date.now() - new Date(m.candidates_made)) / 86400000 : 0;
+  if (listAge > 100) html += `<div class="warn" style="margin:12px 0 0">The stock list is ${Math.round(listAge)} days old (made ${m.candidates_made}). On the laptop run <code>python momentum_paper.py --refresh-candidates</code>, then push.</div>`;
   html += `<p class="sub" style="margin:10px 0 0">${esc(m.rule)} Backtest: about 26% a year but falls of up to 34%, and the edge was only clear from 2020. Paper tracking only.</p>`;
   box.innerHTML = html;
 }

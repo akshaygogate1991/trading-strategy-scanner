@@ -42,6 +42,12 @@ N_PICKS = 20
 UNIVERSE = 200
 MIN_PRICE = 20
 MIN_STOCKS = 1700                  # a full download has ~2,000 stocks with a year of prices
+# Yahoo blocks much of a 2,400-stock download from a server, so the VPS downloads only
+# the 700 most traded stocks. In the backtest a list up to 3 months old gave exactly the
+# same picks as using all stocks. Refresh it on the laptop every 3 months.
+CANDIDATES = os.path.join(HERE, "momentum_candidates.csv")
+N_CANDIDATES = 700
+MAX_MISSING = 0.03                 # rebalance only if at most 3% of the candidates are missing
 INDEX = "^NSEI"
 IST = timezone(timedelta(hours=5, minutes=30))
 EQUITY_URL = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
@@ -240,6 +246,35 @@ def snapshot(state, today, nifty_close) -> dict:
                      f"above the 200-day average. Rebalanced on the first trading day of each month.")
 
 
+# ---------------------------------------------------------------- candidates
+def load_candidates() -> tuple[list[str] | None, str | None]:
+    if not os.path.exists(CANDIDATES):
+        return None, None
+    c = pd.read_csv(CANDIDATES)
+    return c["symbol"].tolist(), str(c["made"].iloc[0])
+
+
+def refresh_candidates(src: Source, today: date) -> str:
+    """Save the N_CANDIDATES most traded stocks (laptop: Yahoo blocks much of a full
+    download from servers). Any top-200 stock of the next few months is in this list."""
+    symbols = src.symbols()
+    frames = src.bars(symbols, "1y")
+    frames.pop(INDEX, None)
+    if len(frames) < 0.95 * len(symbols):
+        return (f"only {len(frames)} of {len(symbols)} stocks came back from Yahoo; "
+                f"list not saved, try again later")
+    raw_close = pd.DataFrame({t: d["Close"] for t, d in frames.items()}).sort_index()
+    value = pd.DataFrame({t: d["Close"] * d["Volume"] for t, d in frames.items()}).reindex(raw_close.index)
+    liq = value.tail(126)
+    liq = liq.median().where(liq.notna().sum() >= 100)
+    recent = raw_close.tail(5).notna().any()
+    top = liq[recent].dropna().nlargest(N_CANDIDATES)
+    pd.DataFrame({"symbol": top.index, "median_traded_value_cr": (top.values / 1e7).round(2),
+                  "made": today.isoformat()}).to_csv(CANDIDATES, index=False)
+    return (f"saved {len(top)} candidates to {os.path.basename(CANDIDATES)} "
+            f"(from {len(frames)} stocks). Push it so the VPS uses it.")
+
+
 # ---------------------------------------------------------------- run
 def run_day(src: Source, data_dir: str, today: date, dry_run: bool = False) -> str:
     state = load_state(data_dir)
@@ -252,12 +287,20 @@ def run_day(src: Source, data_dir: str, today: date, dry_run: bool = False) -> s
         return f"{today}: no NSE bar for today (holiday, weekend or Yahoo not updated yet); nothing done"
 
     msg = []
+    cands, made = load_candidates() if src.offline is None else (None, None)
     if dry_run or month not in state["months"]:
-        frames = src.bars(src.symbols(), "2y")
+        frames = src.bars(cands or src.symbols(), "2y")
         enough = sum(len(d) >= 260 for d in frames.values())
-        if enough < MIN_STOCKS:
+        if cands:
+            missing = [t for t in cands if t not in frames]
+            bad = len(missing) > MAX_MISSING * len(cands)
+            note = (f"{len(missing)} of the {len(cands)} candidate stocks came back without prices "
+                    f"(allowed {int(MAX_MISSING * len(cands))}); picks would be wrong")
+        else:
+            bad = enough < MIN_STOCKS
             note = (f"only {enough} stocks came back with a year of prices (need {MIN_STOCKS}); "
                     f"picks would be wrong")
+        if bad:
             if not dry_run:
                 return f"{today}: {note}. Not rebalancing; will try again at the next run"
             print("WARNING:", note)
@@ -266,7 +309,8 @@ def run_day(src: Source, data_dir: str, today: date, dry_run: bool = False) -> s
         signal_day = max(d for d in idx.index if d <= cut)
         picks = select(frames, signal_day)
         if dry_run:
-            return (f"picks from the close of {signal_day.date()} ({len(frames)} stocks with data, "
+            source = f"candidate list of {made}, {len(cands)} stocks" if cands else "all NSE stocks"
+            return (f"picks from the close of {signal_day.date()} ({source}; {len(frames)} with data, "
                     f"{enough} with a year of prices): "
                     + ", ".join(f"{t[:-3]} {r * 100:+.0f}%" for t, r in picks))
         opens = {t: float(d["Open"].iloc[-1]) for t, d in frames.items()
@@ -292,6 +336,7 @@ def run_day(src: Source, data_dir: str, today: date, dry_run: bool = False) -> s
     state["history"].append(dict(day=today.isoformat(), value=round(value, 2), nifty=nifty_close))
     write_json(os.path.join(data_dir, "momentum_state.json"), state)
     snap = snapshot(state, today.isoformat(), nifty_close)
+    snap["candidates_made"] = made
     write_json(os.path.join(data_dir, "momentum.json"), snap)
     msg.append(f"value Rs {value:,.0f} ({snap['total_pct']:+.2f}%), Nifty {snap['nifty_pct']:+.2f}%")
     return f"{today}: " + "; ".join(msg)
@@ -303,10 +348,15 @@ def main() -> None:
     ap.add_argument("--offline", help="pickle of daily bars (replay/testing)")
     ap.add_argument("--replay", nargs=2, metavar=("START", "END"))
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--refresh-candidates", action="store_true",
+                    help="laptop, every 3 months: rebuild momentum_candidates.csv, then push it")
     a = ap.parse_args()
     data_dir = a.data if os.path.isabs(a.data) else os.path.join(HERE, a.data)
     os.makedirs(data_dir, exist_ok=True)
     src = Source(a.offline)
+    if a.refresh_candidates:
+        print(refresh_candidates(src, datetime.now(IST).date()))
+        return
     if a.replay:
         days = src.offline[INDEX].loc[a.replay[0]:a.replay[1]].index
         for d in days:

@@ -36,6 +36,27 @@ systemctl restart dashboard-api
 
 The first paper buys happen at the first weekday 17:45 run.
 
+## Every 3 months: refresh the stock list (on the laptop)
+
+Yahoo blocks much of a 2,400-stock download from a server. So the VPS downloads only the 700 most traded stocks, listed in `momentum_candidates.csv`.
+
+- **Why that is enough:** in the backtest, a list up to 3 months old gave exactly the same picks as using all stocks.
+- **When to refresh:** every 3 months. The dashboard shows a yellow warning once the list is over 100 days old.
+
+On the laptop, run this in PowerShell (not in the VPS window):
+
+```bash
+cd "D:\ML project\trading strategy"; python momentum_paper.py --refresh-candidates; git commit -am "Refresh momentum stock list"; git push
+```
+
+Then, on the VPS:
+
+```bash
+su - trader -c "cd ~/trading-strategy && git pull"
+```
+
+If more than 3% of the 700 stocks fail to download on a rebalance day, the VPS does not trade that evening. It tries again at the next evening run.
+
 ## Checking it
 
 | What | Command |
