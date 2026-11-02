@@ -58,6 +58,7 @@
   .empty { color: var(--muted); padding: 6px 0; }
   .warn { background: var(--warn-bg); color: var(--warn-ink); border-radius: 10px; padding: 10px 14px; margin-bottom: 16px; }
   .grid2 { display: grid; grid-template-columns: 1fr; gap: 16px; }
+  .grid2 > * { min-width: 0; }   /* let the wide month table scroll instead of widening the page */
   @media (min-width: 900px) { .grid2 { grid-template-columns: 1.2fr 1fr; } }
   .chart { position: relative; }
   .chart svg { display: block; width: 100%; height: auto; overflow: visible; }
@@ -92,6 +93,7 @@
     </header>
     <div id="warn" class="warn" hidden></div>
 
+    <h2>Both Sensex strategies together</h2>
     <div class="tiles">
       <div class="tile"><div class="label" id="todayLabel">Today (live)</div><div class="value" id="tToday">–</div><div class="note" id="tTodayNote"></div></div>
       <div class="tile"><div class="label">This month</div><div class="value" id="tMonth">–</div><div class="note" id="tMonthNote"></div></div>
@@ -99,19 +101,16 @@
       <div class="tile"><div class="label">Sensex</div><div class="value" id="tSpot">–</div><div class="note" id="tSpotNote"></div></div>
     </div>
 
-    <section class="card">
-      <h2 id="liveTitle">Today's positions</h2>
-      <div id="live"></div>
-    </section>
+    <div id="strats"></div>
 
     <div class="grid2">
       <section class="card">
-        <h2>Month-wise profit / loss (net, after charges)</h2>
+        <h2>Both Sensex strategies: month-wise net P&amp;L</h2>
         <div class="chart" id="monthChart"></div>
         <div class="scroll" style="margin-top:12px"><table id="monthTable"></table></div>
       </section>
       <section class="card">
-        <h2>Cumulative net P&amp;L</h2>
+        <h2>Both Sensex strategies: cumulative net P&amp;L</h2>
         <div class="chart" id="eqChart"></div>
       </section>
     </div>
@@ -121,15 +120,6 @@
       <div id="mom"></div>
     </section>
 
-    <section class="card">
-      <h2>Sensex trade history</h2>
-      <div class="filters">
-        <select id="fStrat"><option value="">All strategies</option></select>
-        <select id="fMonth"><option value="">All months</option></select>
-        <span class="sub" id="histCount"></span>
-      </div>
-      <div class="scroll"><table id="hist"></table></div>
-    </section>
     <p class="sub">Sensex amounts are paper results with ₹5/order brokerage, all exchange charges and 0.5% slippage per side.
       "Premium" is entry price × quantity. "Stop" is the current stop-loss (cut-off) price of the leg.
       Momentum amounts include delivery charges (STT, stamp, DP, ₹5/order) and 0.1% slippage per side.</p>
@@ -179,7 +169,10 @@ $("login").addEventListener("submit", (e) => {
 });
 $("logout").onclick = () => { store.set(""); password = ""; showLogin(); };
 $("refresh").onclick = load;
-$("fStrat").onchange = $("fMonth").onchange = () => renderHistory();
+// month filter of each strategy's trade history
+$("strats").addEventListener("change", (e) => {
+  if (e.target.matches("select[data-strat]")) renderHistory(e.target.dataset.strat, e.target.value);
+});
 
 function render() {
   const live = data.live, now = istNow();
@@ -211,8 +204,8 @@ function render() {
   $("tSpot").className = "value";
   $("tSpotNote").textContent = live ? `at ${live.bar}${isToday ? "" : ", " + live.day}` : "";
 
-  renderLive(live, isToday);
-  renderMonths(); renderEquity(); renderMomentum(); fillFilters(); renderHistory();
+  renderStrategies(live, isToday);
+  renderMonths(); renderEquity(); renderMomentum();
 }
 
 function renderMomentum() {
@@ -256,22 +249,69 @@ function setTile(id, v, note) {
   $(id).textContent = money(v); $(id).className = "value " + cls(v); $(id + "Note").textContent = note;
 }
 
-function renderLive(live, isToday) {
-  $("liveTitle").textContent = isToday ? "Today's positions" : (live ? `Last session (${live.day})` : "Positions");
-  if (!live) { $("live").innerHTML = `<div class="empty">The paper trader has not run yet. It starts at 09:05 IST on weekdays.</div>`; return; }
-  $("live").innerHTML = live.strategies.map((s) => {
+// ---- one section per Sensex strategy: tiles, positions, month-wise table, trade history
+const STRAT_ORDER = ["Sensex Directional", "Chota Packet Bada Dhamaka Sensex"];
+const STRAT_NOTE = { "Chota Packet Bada Dhamaka Sensex": "trades on Sensex expiry days only" };
+const shortName = (n) => n.replace("Bada Dhamaka ", "");
+const histMonth = {};                     // remembered month filter per strategy
+let stratNames = [];
+
+function renderStrategies(live, isToday) {
+  const names = [...new Set([...STRAT_ORDER, ...data.daily.map((d) => d.strategy),
+                             ...(live ? live.strategies.map((s) => s.name) : [])])];
+  const month = istNow().date.slice(0, 7), running = isToday && live.status !== "done";
+  $("strats").innerHTML = names.map((name, i) => {
+    const days = data.daily.filter((d) => d.strategy === name);
+    const ls = live ? live.strategies.find((s) => s.name === name) : null;
+    const liveNet = running && ls ? ls.net : 0;
+    const booked = (rows) => rows.reduce((a, d) => a + (d.net || 0), 0);
+    const mDays = days.filter((d) => d.day.startsWith(month));
+    const wins = days.filter((d) => (d.net || 0) > 0).length;
+    const tile = (label, v, note) => `<div class="tile"><div class="label">${label}</div><div class="value ${cls(v)}">${money(v)}</div><div class="note">${note}</div></div>`;
+    const tiles = `<div class="tiles">` +
+      tile(isToday ? (running ? "Today (live)" : "Today (final)") : "Today", isToday && ls ? ls.net : null, isToday ? (ls ? esc(ls.state) : "no trade today") : "no session today") +
+      tile("This month", mDays.length || liveNet ? booked(mDays) + liveNet : null, `${mDays.length} days booked` + (liveNet ? " + today live" : "")) +
+      tile("Total since start", days.length || liveNet ? booked(days) + liveNet : null, `${days.length} days booked`) +
+      `<div class="tile"><div class="label">Winning days</div><div class="value">${days.length ? Math.round(wins / days.length * 100) + "%" : "–"}</div><div class="note">${wins} of ${days.length} days in profit</div></div></div>`;
+    const posTitle = isToday ? "Today's positions" : (live ? `Last session (${live.day})` : "Positions");
+    const pos = !live ? `<div class="empty">The paper trader has not run yet. It starts at 09:05 IST on weekdays.</div>`
+      : ls ? positionsHtml(ls) : `<div class="empty">No trade in this session${STRAT_NOTE[name] ? " (" + STRAT_NOTE[name] + ")" : ""}.</div>`;
+    return `<section class="card"><div class="strat-head"><h2 style="margin:0">${esc(shortName(name))}</h2>
+        ${STRAT_NOTE[name] ? `<span class="chip">${STRAT_NOTE[name]}</span>` : ""}</div>
+      ${tiles}
+      <h2>${posTitle}</h2>${pos}
+      <h2 style="margin-top:16px">Month-wise</h2>${monthTableHtml(days)}
+      <div class="strat-head" style="margin-top:16px"><h2 style="margin:0">Trade history</h2>
+        <select data-strat="${i}"><option value="">All months</option>${[...new Set(data.trades.filter((t) => t.strategy === name).map((t) => t.day.slice(0, 7)))].sort().reverse().map((m) => `<option${histMonth[i] === m ? " selected" : ""}>${m}</option>`).join("")}</select>
+        <span class="sub" id="histCount${i}"></span></div>
+      <div class="scroll"><table id="hist${i}"></table></div></section>`;
+  }).join("");
+  stratNames = names;
+  names.forEach((_, i) => renderHistory(i, histMonth[i] || ""));
+}
+
+function monthTableHtml(days) {
+  if (!days.length) return `<div class="empty">No completed trading days yet.</div>`;
+  const by = {};
+  days.forEach((d) => { (by[d.day.slice(0, 7)] ||= []).push(d.net || 0); });
+  return `<div class="scroll"><table><tr><th>Month</th><th>Days</th><th>Winning days</th><th>Best day</th><th>Worst day</th><th>Net P&amp;L</th></tr>` +
+    Object.keys(by).sort().reverse().map((m) => { const v = by[m], tot = v.reduce((a, x) => a + x, 0);
+      return `<tr><td>${monthName(m, true)}</td><td>${v.length}</td><td>${v.filter((x) => x > 0).length}</td><td class="${cls(Math.max(...v))}">${money(Math.max(...v))}</td><td class="${cls(Math.min(...v))}">${money(Math.min(...v))}</td><td class="${cls(tot)}"><b>${money(tot)}</b></td></tr>`; }).join("") +
+    `</table></div>`;
+}
+
+function positionsHtml(s) {
     const open = s.open.map((l) => l.state === "wait"
       ? `<tr><td class="l">${l.side} ${l.kind} ${l.strike}</td><td>${l.qty}</td><td>–</td><td>–</td><td>–</td><td>–</td><td>trigger ${px.format(l.trigger)}</td><td class="l"><span class="chip">waiting</span></td><td>–</td></tr>`
       : `<tr><td class="l">${l.side} ${l.kind} ${l.strike}</td><td>${l.qty}</td><td>${l.entry_time}</td><td>${px.format(l.entry_px)}</td><td>₹${inr.format(l.premium)}</td><td>${px.format(l.ltp)}</td><td>${l.stop == null ? "–" : px.format(l.stop)}</td><td class="l"><span class="chip">open</span></td><td class="${cls(l.net)}">${money(l.net)}</td></tr>`).join("");
     const closed = s.closed.map((t) =>
       `<tr><td class="l">${t.side} ${t.kind} ${t.strike}</td><td>${t.qty}</td><td>${t.entry_time}</td><td>${px.format(t.entry_px)}</td><td>₹${inr.format(t.entry_px * t.qty)}</td><td>${t.exit_time} @ ${px.format(t.exit_px)}</td><td>–</td><td class="l"><span class="chip">${esc(reasonText(t.reason))}</span></td><td class="${cls(t.net)}">${money(t.net)}</td></tr>`).join("");
     const rows = open + closed;
-    return `<div class="strat"><div class="strat-head"><b>${esc(s.name)}</b><span class="chip">${esc(s.state)}</span>
+    return `<div class="strat"><div class="strat-head"><span class="chip">${esc(s.state)}</span>
       <span class="sub">entry ${s.entry} · exit ${s.exit}${s.overall_sl ? " · overall stop ₹" + inr.format(s.overall_sl) : ""}</span>
       <span class="spacer"></span><b class="${cls(s.net)}">${money(s.net)}</b></div>
       ${rows ? `<div class="scroll"><table><tr><th>Leg</th><th>Qty</th><th>Entry time</th><th>Entry price</th><th>Premium</th><th>Last / exit</th><th>Stop</th><th class="l">Status</th><th>Net P&amp;L</th></tr>${rows}</table></div>`
               : `<div class="empty">${s.state === "before entry" ? "Waiting for entry time " + s.entry : "No position"}</div>`}</div>`;
-  }).join("") || `<div class="empty">No strategy trades today.</div>`;
 }
 function reasonText(r) {
   return { sl: "stop hit", time: "time exit", target: "target hit", overall_sl: "overall stop", overall_tgt: "overall target", signal_drop: "dropped" }[r] || r;
@@ -357,23 +397,16 @@ function renderEquity() {
   sv.querySelector("#eqHit").addEventListener("pointerleave", () => { tip.style.display = "none"; cross.setAttribute("visibility", "hidden"); dot.setAttribute("visibility", "hidden"); });
 }
 
-function fillFilters() {
-  const fill = (sel, values, all) => {
-    const cur = sel.value;
-    sel.innerHTML = `<option value="">${all}</option>` + values.map((v) => `<option${v === cur ? " selected" : ""}>${esc(v)}</option>`).join("");
-  };
-  fill($("fStrat"), [...new Set(data.trades.map((t) => t.strategy))], "All strategies");
-  fill($("fMonth"), [...new Set(data.trades.map((t) => t.day.slice(0, 7)))].sort().reverse(), "All months");
-}
-function renderHistory() {
+function renderHistory(i, m) {
   if (!data) return;
-  const s = $("fStrat").value, m = $("fMonth").value;
-  const rows = data.trades.filter((t) => (!s || t.strategy === s) && (!m || t.day.startsWith(m))).reverse();
+  histMonth[i] = m;
+  const name = stratNames[i];
+  const rows = data.trades.filter((t) => t.strategy === name && (!m || t.day.startsWith(m))).reverse();
   const net = rows.reduce((a, t) => a + (t.net || 0), 0);
-  $("histCount").innerHTML = rows.length ? `${rows.length} leg trades · net <b class="${cls(net)}">${money(net)}</b>` : "";
-  $("hist").innerHTML = rows.length
-    ? `<tr><th>Date</th><th class="l">Strategy</th><th class="l">Leg</th><th>Qty</th><th>Entry</th><th>Entry price</th><th>Premium</th><th>Exit</th><th>Exit price</th><th class="l">Reason</th><th>Charges</th><th>Net</th></tr>` +
-      rows.map((t) => `<tr><td>${t.day}</td><td class="l">${esc(t.strategy.replace("Bada Dhamaka ", ""))}</td><td class="l">${t.side} ${t.kind} ${t.strike}</td><td>${t.qty}</td><td>${t.entry_time}</td><td>${px.format(t.entry_px)}</td><td>₹${inr.format(t.premium)}</td><td>${t.exit_time}</td><td>${px.format(t.exit_px)}</td><td class="l">${esc(reasonText(t.reason))}</td><td>₹${inr.format(t.charges)}</td><td class="${cls(t.net)}">${money(t.net)}</td></tr>`).join("")
+  $("histCount" + i).innerHTML = rows.length ? `${rows.length} leg trades · net <b class="${cls(net)}">${money(net)}</b>` : "";
+  $("hist" + i).innerHTML = rows.length
+    ? `<tr><th>Date</th><th class="l">Leg</th><th>Qty</th><th>Entry</th><th>Entry price</th><th>Premium</th><th>Exit</th><th>Exit price</th><th class="l">Reason</th><th>Charges</th><th>Net</th></tr>` +
+      rows.map((t) => `<tr><td>${t.day}</td><td class="l">${t.side} ${t.kind} ${t.strike}</td><td>${t.qty}</td><td>${t.entry_time}</td><td>${px.format(t.entry_px)}</td><td>₹${inr.format(t.premium)}</td><td>${t.exit_time}</td><td>${px.format(t.exit_px)}</td><td class="l">${esc(reasonText(t.reason))}</td><td>₹${inr.format(t.charges)}</td><td class="${cls(t.net)}">${money(t.net)}</td></tr>`).join("")
     : `<tr><td class="empty">No trades yet.</td></tr>`;
 }
 
