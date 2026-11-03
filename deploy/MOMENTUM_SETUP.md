@@ -66,3 +66,15 @@ If more than 3% of the 700 stocks fail to download on a rebalance day, the VPS d
 | Holdings file | `cat /home/trader/trading-strategy/paper_data/momentum.json` |
 
 If a log line says "no NSE bar for today", that day was a holiday, or Yahoo had not posted the day's prices yet. It simply tries again the next evening.
+
+## Live prices on the dashboard (every 15 minutes in market hours)
+
+`momentum-live.timer` runs `momentum_paper.py --live` at 09:15, 09:30 ... 15:45 IST on weekdays. It only re-prices the 20 holdings at Yahoo's latest 5-minute price (which can lag a few minutes) and rewrites `momentum.json`. It never buys or sells, and the evening run stays the record. The evening run also retries at 19:00 and 21:00 IST in case Yahoo is late at 17:45.
+
+Setup (on the VPS, as root):
+
+```bash
+su - trader -c "cd ~/trading-strategy && git pull" && cp /home/trader/trading-strategy/deploy/momentum-live.service /home/trader/trading-strategy/deploy/momentum-live.timer /home/trader/trading-strategy/deploy/momentum-paper.timer /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now momentum-live.timer && systemctl restart momentum-paper.timer && systemctl list-timers 'momentum*' --no-pager
+```
+
+Check it: `journalctl -u momentum-live -n 10 --no-pager`. Run it now by hand: `systemctl start momentum-live`.

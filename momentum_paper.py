@@ -12,6 +12,10 @@ Run once every weekday evening (deploy/momentum-paper.timer):
   * Every run: marks the holdings at today's close and writes
     paper_data/momentum.json for the dashboard.
 
+--live (deploy/momentum-live.timer, every 15 minutes in market hours) only re-prices
+the holdings at the latest 5-minute price and rewrites momentum.json with live=true.
+It never buys, sells or touches momentum_state.json; the evening run stays the record.
+
 Files in paper_data/: momentum_state.json (holdings and cash),
 momentum_trades.csv (every paper buy and sell), momentum.json (snapshot).
 
@@ -20,11 +24,13 @@ EQUITY_L.csv, refreshed each month, with nse_equity_list.csv as the fallback.
 
   python momentum_paper.py              # normal evening run
   python momentum_paper.py --dry-run    # print what it would pick now, save nothing
+  python momentum_paper.py --live       # re-price the holdings now, for the dashboard
   python momentum_paper.py --replay 2026-09-01 2026-10-30 --offline swing_data/prices_all.pkl --data paper_data_momentum_replay
 """
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import io
 import json
@@ -72,7 +78,7 @@ class Source:
                 self.offline = pickle.load(fh)
         self.today = None                 # replay: hide bars after this day
 
-    def bars(self, tickers: list[str], period: str) -> dict[str, pd.DataFrame]:
+    def bars(self, tickers: list[str], period: str, interval: str = "1d") -> dict[str, pd.DataFrame]:
         if self.offline is not None:
             out = {}
             for t in tickers:
@@ -93,7 +99,7 @@ class Source:
             for i in range(0, len(todo), size):
                 part = todo[i:i + size]
                 try:
-                    raw = yf.download(part, period=period, auto_adjust=True, group_by="ticker",
+                    raw = yf.download(part, period=period, interval=interval, auto_adjust=True, group_by="ticker",
                                       progress=False, threads=True)
                 except Exception as e:
                     print(f"  download error ({e}); will retry")
@@ -342,18 +348,55 @@ def run_day(src: Source, data_dir: str, today: date, dry_run: bool = False) -> s
     return f"{today}: " + "; ".join(msg)
 
 
+def live_mark(src: Source, data_dir: str) -> str:
+    """Re-price the holdings at the latest intraday price; writes only momentum.json."""
+    state = load_state(data_dir)
+    if not state["holdings"]:
+        return "no holdings yet; nothing to price"
+    held = list(state["holdings"])
+    marks = src.bars(held + [INDEX], "1d", "5m")
+    idx = marks.get(INDEX)
+    if idx is None or not len(idx):
+        return "no live Nifty price from Yahoo; momentum.json left as it was"
+    view = copy.deepcopy(state)                   # the saved state stays the evening record
+    priced = 0
+    for t, h in view["holdings"].items():
+        d = marks.get(t)
+        if d is not None and len(d):
+            h["last_px"] = float(d["Close"].iloc[-1])
+            priced += 1
+    nifty = float(idx["Close"].iloc[-1])
+    day = idx.index[-1].strftime("%Y-%m-%d")
+    value = view["cash"] + sum(h["qty"] * h["last_px"] for h in view["holdings"].values())
+    view["history"] = [r for r in view["history"] if r["day"] != day]
+    view["history"].append(dict(day=day, value=round(value, 2), nifty=nifty))
+    snap = snapshot(view, day, nifty)
+    old = os.path.join(data_dir, "momentum.json")
+    if os.path.exists(old):
+        with open(old, encoding="utf-8") as fh:
+            snap["candidates_made"] = json.load(fh).get("candidates_made")
+    snap["live"] = True
+    snap["priced"] = f"{priced} of {len(held)}"
+    write_json(old, snap)
+    return f"live {day}: {priced} of {len(held)} priced, value Rs {value:,.0f} ({snap['total_pct']:+.2f}%)"
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default="paper_data")
     ap.add_argument("--offline", help="pickle of daily bars (replay/testing)")
     ap.add_argument("--replay", nargs=2, metavar=("START", "END"))
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--live", action="store_true", help="re-price the holdings now (market hours)")
     ap.add_argument("--refresh-candidates", action="store_true",
                     help="laptop, every 3 months: rebuild momentum_candidates.csv, then push it")
     a = ap.parse_args()
     data_dir = a.data if os.path.isabs(a.data) else os.path.join(HERE, a.data)
     os.makedirs(data_dir, exist_ok=True)
     src = Source(a.offline)
+    if a.live:
+        print(live_mark(src, data_dir))
+        return
     if a.refresh_candidates:
         print(refresh_candidates(src, datetime.now(IST).date()))
         return

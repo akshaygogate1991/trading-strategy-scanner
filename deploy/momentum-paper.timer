@@ -3,6 +3,9 @@ Description=Run the momentum paper portfolio every weekday evening (IST), after 
 
 [Timer]
 OnCalendar=Mon..Fri 17:45 Asia/Kolkata
+# retries in case Yahoo has not published the day's bar yet; a repeat run changes nothing
+OnCalendar=Mon..Fri 19:00 Asia/Kolkata
+OnCalendar=Mon..Fri 21:00 Asia/Kolkata
 Persistent=true
 
 [Install]

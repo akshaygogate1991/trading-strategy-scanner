@@ -1,0 +1,12 @@
+[Unit]
+Description=Live re-pricing of the momentum paper portfolio (dashboard only, no orders, no trades)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=trader
+WorkingDirectory=/home/trader/trading-strategy
+ExecStart=/home/trader/trading-strategy/.venv/bin/python momentum_paper.py --live
+TimeoutStartSec=5min
+Environment=PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8

@@ -1,0 +1,11 @@
+[Unit]
+Description=Re-price the momentum paper portfolio every 15 minutes in market hours (IST)
+
+[Timer]
+# 09:15 to 15:45; the 15:45 run catches the closing prices
+OnCalendar=Mon..Fri 09:15,30,45 Asia/Kolkata
+OnCalendar=Mon..Fri 10..15:00,15,30,45 Asia/Kolkata
+Persistent=false
+
+[Install]
+WantedBy=timers.target
