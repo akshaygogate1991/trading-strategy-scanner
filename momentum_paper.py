@@ -222,16 +222,35 @@ def rebalance(state, today, picks, opens) -> list[dict]:
     return trades
 
 
-def snapshot(state, today, nifty_close) -> dict:
-    hold = []
+def prev_closes(frames: dict[str, pd.DataFrame], day: date) -> dict[str, float]:
+    """Each stock's last daily close before `day` (the base for today's P&L)."""
+    out = {}
+    for t, d in frames.items():
+        before = d[d.index.date < day]
+        if len(before):
+            out[t] = float(before["Close"].iloc[-1])
+    return out
+
+
+def snapshot(state, today, nifty_close, prev=None) -> dict:
+    """prev: ticker -> previous session's close, for today's P&L (stocks bought today use the buy price)."""
+    hold, prev = [], prev or {}
     for t, h in sorted(state["holdings"].items()):
         val = h["qty"] * h["last_px"]
         cost = h["qty"] * h["entry_px"]
         pnl = val - cost - h["buy_charges"]
+        bought_today = h["entry_day"] == today
+        ref = h["entry_px"] if bought_today else prev.get(t)
+        day_pnl = None if ref is None else h["qty"] * (h["last_px"] - ref) - (h["buy_charges"] if bought_today else 0)
         hold.append(dict(ticker=t[:-3], qty=h["qty"], entry_day=h["entry_day"], entry_px=h["entry_px"],
                          last_px=round(h["last_px"], 2), value=round(val, 2), pnl=round(pnl, 2),
-                         pnl_pct=round(pnl / cost * 100, 2) if cost else None))
+                         pnl_pct=round(pnl / cost * 100, 2) if cost else None,
+                         day_pnl=None if day_pnl is None else round(day_pnl, 2),
+                         day_pct=None if ref is None else round((h["last_px"] / ref - 1) * 100, 2)))
     value = state["cash"] + sum(x["value"] for x in hold)
+    day_rows = [x for x in hold if x["day_pnl"] is not None]
+    day_base = sum(x["value"] - x["day_pnl"] for x in day_rows)
+    day_pnl = round(sum(x["day_pnl"] for x in day_rows), 2) if day_rows else None
     months = {}
     for row in state["history"]:
         months[row["day"][:7]] = row                      # last run of each month
@@ -244,6 +263,7 @@ def snapshot(state, today, nifty_close) -> dict:
     return dict(as_of=today, updated=datetime.now(IST).strftime("%Y-%m-%d %H:%M"),
                 capital=CAPITAL, value=round(value, 2), cash=round(state["cash"], 2),
                 total_pnl=round(value - CAPITAL, 2), total_pct=round((value / CAPITAL - 1) * 100, 2),
+                day_pnl=day_pnl, day_pct=round(day_pnl / day_base * 100, 2) if day_rows and day_base else None,
                 nifty_pct=round((nifty_close / state["nifty_start"] - 1) * 100, 2) if state["nifty_start"] else None,
                 start=state["start"], signal_day=state["signal_day"],
                 picks=[dict(ticker=t[:-3], ret12_1=round(r * 100, 1)) for t, r in state["picks"]],
@@ -341,7 +361,7 @@ def run_day(src: Source, data_dir: str, today: date, dry_run: bool = False) -> s
     state["history"] = [r for r in state["history"] if r["day"] != today.isoformat()]
     state["history"].append(dict(day=today.isoformat(), value=round(value, 2), nifty=nifty_close))
     write_json(os.path.join(data_dir, "momentum_state.json"), state)
-    snap = snapshot(state, today.isoformat(), nifty_close)
+    snap = snapshot(state, today.isoformat(), nifty_close, prev_closes(marks, today))
     snap["candidates_made"] = made
     write_json(os.path.join(data_dir, "momentum.json"), snap)
     msg.append(f"value Rs {value:,.0f} ({snap['total_pct']:+.2f}%), Nifty {snap['nifty_pct']:+.2f}%")
@@ -370,7 +390,8 @@ def live_mark(src: Source, data_dir: str) -> str:
     value = view["cash"] + sum(h["qty"] * h["last_px"] for h in view["holdings"].values())
     view["history"] = [r for r in view["history"] if r["day"] != day]
     view["history"].append(dict(day=day, value=round(value, 2), nifty=nifty))
-    snap = snapshot(view, day, nifty)
+    daily = src.bars(held, "5d")
+    snap = snapshot(view, day, nifty, prev_closes(daily, date.fromisoformat(day)))
     old = os.path.join(data_dir, "momentum.json")
     if os.path.exists(old):
         with open(old, encoding="utf-8") as fh:

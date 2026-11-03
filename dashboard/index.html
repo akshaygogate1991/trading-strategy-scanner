@@ -347,9 +347,12 @@ function renderMomentum() {
     tile("Total profit / loss", money(m.total_pnl), cls(m.total_pnl), `${pct(m.total_pct)} · ${vsNifty}`) +
     tile("This month", thisMonth ? pct(thisMonth.ret_pct) : "–", cls(thisMonth && thisMonth.ret_pct), thisMonth && thisMonth.nifty_pct != null ? `Nifty ${pct(thisMonth.nifty_pct)}` : "") +
     tile("Cash", "₹" + inr.format(m.cash), "", `${m.holdings.length} stocks held · picks from ${m.signal_day} close`) + `</div>`;
+  const holdPnl = m.holdings.reduce((a, h) => a + h.pnl, 0);
+  const holdCost = m.holdings.reduce((a, h) => a + h.qty * h.entry_px, 0);
   html += m.holdings.length
-    ? `<div class="scroll"><table><tr><th>Stock</th><th>Qty</th><th>Bought on</th><th>Buy price</th><th>Last price</th><th>Value</th><th>P&amp;L</th><th>P&amp;L %</th></tr>` +
-      m.holdings.map((h) => `<tr><td class="l">${esc(h.ticker)}</td><td>${h.qty}</td><td>${h.entry_day}</td><td>${px.format(h.entry_px)}</td><td>${px.format(h.last_px)}</td><td>₹${inr.format(h.value)}</td><td class="${cls(h.pnl)}">${money(h.pnl)}</td><td class="${cls(h.pnl_pct)}">${pct(h.pnl_pct)}</td></tr>`).join("") + `</table></div>`
+    ? `<div class="scroll"><table><tr><th>Stock</th><th>Qty</th><th>Bought on</th><th>Buy price</th><th>Last price</th><th>Value</th><th>P&amp;L</th><th>P&amp;L %</th><th>Today's P&amp;L</th><th>Today's P&amp;L %</th></tr>` +
+      m.holdings.map((h) => `<tr><td class="l">${esc(h.ticker)}</td><td>${h.qty}</td><td>${h.entry_day}</td><td>${px.format(h.entry_px)}</td><td>${px.format(h.last_px)}</td><td>₹${inr.format(h.value)}</td><td class="${cls(h.pnl)}">${money(h.pnl)}</td><td class="${cls(h.pnl_pct)}">${pct(h.pnl_pct)}</td><td class="${cls(h.day_pnl)}">${h.day_pnl == null ? "–" : money(h.day_pnl)}</td><td class="${cls(h.day_pct)}">${pct(h.day_pct)}</td></tr>`).join("") +
+      `<tr><th class="l">Total</th><th></th><th></th><th></th><th></th><th>₹${inr.format(m.holdings.reduce((a, h) => a + h.value, 0))}</th><th class="${cls(holdPnl)}">${money(holdPnl)}</th><th class="${cls(holdPnl)}">${pct(holdCost ? holdPnl / holdCost * 100 : null)}</th><th class="${cls(m.day_pnl)}">${m.day_pnl == null ? "–" : money(m.day_pnl)}</th><th class="${cls(m.day_pct)}">${pct(m.day_pct)}</th></tr></table></div>`
     : `<div class="empty">No stocks held.</div>`;
   if (m.months.length) {
     html += `<h2 style="margin-top:16px">Month by month</h2><div class="scroll"><table><tr><th>Month</th><th>Portfolio</th><th>Nifty 50</th><th>Difference</th><th>Value at month end</th></tr>` +
