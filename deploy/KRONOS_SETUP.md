@@ -20,7 +20,7 @@ free -h && df -h /home
 **2. Get the new code, PyTorch (CPU) and the Kronos code:**
 
 ```bash
-su - trader -c "cd ~/trading-strategy && git pull && .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu && .venv/bin/pip install einops safetensors tqdm && git clone --depth 1 https://github.com/shiyu-coder/Kronos.git ~/Kronos"
+su - trader -c "cd ~/trading-strategy && git pull && .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu && .venv/bin/pip install einops safetensors tqdm huggingface_hub && git clone --depth 1 https://github.com/shiyu-coder/Kronos.git ~/Kronos"
 ```
 
 **3. Test run.** This prints the signals for the next session and saves nothing. The first time, it downloads the model (about 100 MB), so allow a few minutes:
