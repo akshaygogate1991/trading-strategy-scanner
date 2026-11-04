@@ -8,7 +8,7 @@ Type=oneshot
 User=trader
 WorkingDirectory=/home/trader/trading-strategy
 ExecStart=/home/trader/trading-strategy/.venv/bin/python momentum_paper.py
-# the gold holding next to momentum (gold_paper.py) reads momentum.json, so it runs second
+# the separate GOLDBEES paper holding (gold_paper.py), bought once and kept
 ExecStart=/home/trader/trading-strategy/.venv/bin/python gold_paper.py
 # the monthly rebalance downloads ~2,400 stocks from Yahoo; normal days take seconds
 TimeoutStartSec=45min

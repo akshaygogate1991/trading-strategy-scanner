@@ -103,7 +103,7 @@
     <nav class="tabs" role="tablist">
       <button type="button" role="tab" data-tab="main" aria-selected="true">Sensex + Momentum</button>
       <button type="button" role="tab" data-tab="kronos" aria-selected="false">Paper Trades with Kronos</button>
-      <button type="button" role="tab" data-tab="gold" aria-selected="false">Momentum + Gold</button>
+      <button type="button" role="tab" data-tab="gold" aria-selected="false">Gold (GOLDBEES)</button>
     </nav>
 
     <div id="tab-main">
@@ -166,10 +166,10 @@
         Signals are made after each close (weekday evening run), traded at the next session's open and closed at its close.</p>
     </div>
     <div id="tab-gold" hidden>
-      <div class="warn">Paper only. Backtest 2014–2026: 80 % momentum + 20 % gold made about 25 % a year with the worst fall −22 %,
-        against 26 % and −34 % for momentum alone. Gold costs a little return and cuts the big falls.</div>
+      <div class="warn">Paper only. Backtest 2004–2026: just holding gold (in rupees) made about 14.8 % a year with the worst fall −29 %.
+        Every rule that timed gold in and out did worse, so this holding is bought once and kept.</div>
       <section class="card">
-        <div class="strat-head"><h2 style="margin:0">Momentum + 20 % gold (GOLDBEES)</h2><span class="spacer"></span><span class="sub" id="gUpdated"></span></div>
+        <div class="strat-head"><h2 style="margin:0">GOLDBEES, bought once and kept (paper)</h2><span class="spacer"></span><span class="sub" id="gUpdated"></span></div>
         <div id="gold"></div>
       </section>
     </div>
@@ -385,7 +385,7 @@ function renderGold() {
   const g = data.gold, box = $("gold");
   if (!g) {
     $("gUpdated").textContent = "";
-    box.innerHTML = `<div class="empty">Not started yet. The gold holding is bought at the next weekday evening run (17:45 IST), after the momentum run.</div>`;
+    box.innerHTML = `<div class="empty">Not started yet. GOLDBEES is bought at the next weekday evening run (17:45 IST).</div>`;
     return;
   }
   $("gUpdated").textContent = g.live
@@ -393,29 +393,24 @@ function renderGold() {
     : `closing prices of ${g.as_of} · updated ${g.updated.slice(11)} IST`;
   const pct = (v) => v == null ? "–" : (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(2) + "%";
   const tile = (label, value, c, note) => `<div class="tile"><div class="label">${label}</div><div class="value ${c}">${value}</div><div class="note">${note}</div></div>`;
-  const cPnl = g.combined_value - g.combined_start, mPnl = g.mom_value - (g.combined_start - g.capital);
   let html = `<div class="tiles">` +
-    tile("Momentum + gold", "₹" + inr.format(g.combined_value), cls(cPnl), `${money(cPnl)} · ${pct(g.combined_pct)} since ${g.start}`) +
-    tile("Momentum alone", pct(g.mom_pct), cls(g.mom_pct), `${money(mPnl)} since ${g.start}`) +
-    tile("Gold (GOLDBEES)", pct(g.gold_pct), cls(g.gold_pct), `₹${px.format(g.price)} · today ${pct(g.day_pct)}`) +
-    tile("Gold share", g.weight_pct == null ? "–" : g.weight_pct.toFixed(1) + "%", "", `target 20% · reset on the ${g.next_rebalance}`) +
-    tile("Fall from peak", pct(g.combined_dd), cls(g.combined_dd), `momentum alone ${pct(g.mom_dd)}`) + `</div>`;
-  html += `<div class="scroll"><table><tr><th>Part</th><th>Value</th><th>Units</th><th>Since ${g.start}</th></tr>` +
-    `<tr><td class="l">Momentum (20 stocks, first tab)</td><td>₹${inr.format(g.mom_value)}</td><td>–</td><td class="${cls(g.mom_pct)}">${pct(g.mom_pct)}</td></tr>` +
-    `<tr><td class="l">GOLDBEES</td><td>₹${inr.format(g.gold_value)}</td><td>${inr.format(g.units)}</td><td class="${cls(g.gold_pct)}">${pct(g.gold_pct)}</td></tr>` +
-    `<tr><td class="l">Gold cash / transfers</td><td>${money(g.gold_cash)}</td><td></td><td></td></tr>` +
-    `<tr><th class="l">Together</th><th>₹${inr.format(g.combined_value)}</th><th></th><th class="${cls(g.combined_pct)}">${pct(g.combined_pct)}</th></tr></table></div>`;
+    tile("Value now", "₹" + inr.format(g.value), "", `invested ₹${inr.format(g.capital)} on ${g.start}`) +
+    tile("Total profit / loss", money(g.pnl), cls(g.pnl), `${pct(g.pnl_pct)} incl. charges`) +
+    tile("Today", g.day_pnl == null ? "–" : money(g.day_pnl), cls(g.day_pnl), `GOLDBEES ${pct(g.day_pct)}`) +
+    tile("Fall from peak", pct(g.dd), cls(g.dd), "backtest worst: −29%") + `</div>`;
+  html += `<div class="scroll"><table><tr><th>Stock</th><th>Units</th><th>Bought on</th><th>Buy price</th><th>Last price</th><th>Value</th><th>P&amp;L</th><th>P&amp;L %</th></tr>` +
+    `<tr><td class="l">GOLDBEES</td><td>${inr.format(g.units)}</td><td>${g.start}</td><td>${px.format(g.buy_px)}</td><td>${px.format(g.price)}</td><td>₹${inr.format(g.holding_value)}</td><td class="${cls(g.pnl)}">${money(g.pnl)}</td><td class="${cls(g.pnl_pct)}">${pct(g.pnl_pct)}</td></tr>` +
+    `<tr><td class="l">Cash left over</td><td></td><td></td><td></td><td></td><td>₹${inr.format(g.cash)}</td><td></td><td></td></tr></table></div>`;
   if (g.months.length) {
-    html += `<h2 style="margin-top:16px">Month by month</h2><div class="scroll"><table><tr><th>Month</th><th>Together</th><th>Momentum alone</th><th>Gold</th><th>Gold helped</th><th>Value at month end</th></tr>` +
-      [...g.months].reverse().map((r) => { const d = r.combined_pct - r.mom_pct;
-        return `<tr><td>${monthName(r.month, true)}</td><td class="${cls(r.combined_pct)}">${pct(r.combined_pct)}</td><td class="${cls(r.mom_pct)}">${pct(r.mom_pct)}</td><td class="${cls(r.gold_pct)}">${pct(r.gold_pct)}</td><td class="${cls(d)}">${pct(d)}</td><td>₹${inr.format(r.combined)}</td></tr>`; }).join("") + `</table></div>`;
+    html += `<h2 style="margin-top:16px">Month by month</h2><div class="scroll"><table><tr><th>Month</th><th>GOLDBEES</th><th>Value at month end</th></tr>` +
+      [...g.months].reverse().map((r) => `<tr><td>${monthName(r.month, true)}</td><td class="${cls(r.pct)}">${pct(r.pct)}</td><td>₹${inr.format(r.value)}</td></tr>`).join("") + `</table></div>`;
   }
   const tr = (g.trades || []).slice().reverse();
   if (tr.length) {
-    html += `<details style="margin-top:12px"><summary class="sub">Paper gold buys and sells (${tr.length})</summary><div class="scroll"><table><tr><th>Date</th><th class="l">Side</th><th>Units</th><th>Price</th><th>Value</th><th>Charges</th></tr>` +
+    html += `<details style="margin-top:12px"><summary class="sub">Paper gold buys (${tr.length})</summary><div class="scroll"><table><tr><th>Date</th><th class="l">Side</th><th>Units</th><th>Price</th><th>Value</th><th>Charges</th></tr>` +
       tr.map((t) => `<tr><td>${t.day}</td><td class="l">${esc(t.side)}</td><td>${inr.format(+t.qty)}</td><td>${px.format(+t.price)}</td><td>₹${inr.format(+t.value)}</td><td>₹${inr.format(+t.charges)}</td></tr>`).join("") + `</table></div></details>`;
   }
-  html += `<p class="sub" style="margin:10px 0 0">${esc(g.rule)} The yearly top-up or trim moves money between the two sides, shown as gold cash / transfers. Charges as for momentum (delivery, 0.1% slippage).</p>`;
+  html += `<p class="sub" style="margin:10px 0 0">${esc(g.rule)} Separate from the momentum portfolio on the first tab. Buy price includes charges (delivery, 0.1% slippage).</p>`;
   box.innerHTML = html;
 }
 function setTile(id, v, note) {

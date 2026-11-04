@@ -79,19 +79,18 @@ su - trader -c "cd ~/trading-strategy && git pull" && cp /home/trader/trading-st
 
 Check it: `journalctl -u momentum-live -n 10 --no-pager`. Run it now by hand: `systemctl start momentum-live`.
 
-## Gold next to momentum (Momentum + Gold tab)
+## Gold (GOLDBEES) tab
 
-`gold_paper.py` keeps a paper GOLDBEES holding beside the momentum portfolio, so the two are
-80 % momentum + 20 % gold. It never touches the momentum portfolio. On the first trading day
-of each year it sets gold back to 20 % of the total. It runs right after `momentum_paper.py`
-in the same two services (evening record and the 15-minute live re-pricing).
+`gold_paper.py` keeps a separate paper GOLDBEES holding: bought once for Rs 1,27,142 on
+4 Nov 2026 and kept, with no selling, no top-ups and no timing (gold_test.py: every timing rule
+did worse than holding). It has nothing to do with the momentum portfolio; it only runs in the
+same two services (evening record and the 15-minute live re-pricing).
 Files: `paper_data/gold_state.json`, `gold_trades.csv`, `gold.json`.
 
-Turn it on (as root on the VPS, after pushing from the laptop):
+Update it on the VPS (as root, after pushing from the laptop):
 
 ```
-su - trader -c "cd ~/trading-strategy && git pull" && cp /home/trader/trading-strategy/deploy/momentum-paper.service /home/trader/trading-strategy/deploy/momentum-live.service /etc/systemd/system/ && systemctl daemon-reload && systemctl restart dashboard-api && systemctl start momentum-paper && journalctl -u momentum-paper -n 5 --no-pager
+su - trader -c "cd ~/trading-strategy && git pull" && cp /home/trader/trading-strategy/deploy/momentum-paper.service /home/trader/trading-strategy/deploy/momentum-live.service /etc/systemd/system/ && systemctl daemon-reload && systemctl restart dashboard-api && systemctl start momentum-paper && journalctl -u momentum-paper -n 3 --no-pager
 ```
 
-The last line should say `started: Rs ... in GOLDBEES`. If it says "no GOLDBEES bar for today",
-it starts by itself at the next evening run. Vercel redeploys the new tab by itself after the push.
+The last line shows `GOLDBEES ..., value Rs ...`. Vercel redeploys the tab by itself after the push.
