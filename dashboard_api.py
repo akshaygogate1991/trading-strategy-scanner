@@ -1,7 +1,8 @@
 """Read-only JSON feed of the paper trades, for the Vercel dashboard.
 
 Includes the Sensex paper trades (trades.csv, daily.csv, live.json) and the
-monthly momentum paper portfolio (momentum.json, momentum_trades.csv).
+monthly momentum paper portfolio (momentum.json, momentum_trades.csv) and the gold
+holding next to it (gold.json, gold_trades.csv).
 
 Serves ONE endpoint, GET /api/dashboard, and only with the right token:
     Authorization: Bearer <token>
@@ -72,8 +73,11 @@ def build(data_dir):
     momentum = read_json(os.path.join(data_dir, "momentum.json"))
     if momentum is not None:
         momentum["trades"] = read_csv(os.path.join(data_dir, "momentum_trades.csv"))[-200:]
+    gold = read_json(os.path.join(data_dir, "gold.json"))
+    if gold is not None:
+        gold["trades"] = read_csv(os.path.join(data_dir, "gold_trades.csv"))[-50:]
     return dict(live=read_json(os.path.join(data_dir, "live.json")), trades=trades[-500:], daily=daily,
-                monthly=monthly, total=round(sum(r["net"] or 0.0 for r in daily), 2), momentum=momentum,
+                monthly=monthly, total=round(sum(r["net"] or 0.0 for r in daily), 2), momentum=momentum, gold=gold,
                 kronos=kronos(data_dir, trades))
 
 
