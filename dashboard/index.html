@@ -166,10 +166,10 @@
         Signals are made after each close (weekday evening run), traded at the next session's open and closed at its close.</p>
     </div>
     <div id="tab-gold" hidden>
-      <div class="warn">Paper only. Backtest 2004–2026: just holding gold (in rupees) made about 14.8 % a year with the worst fall −29 %.
-        Every rule that timed gold in and out did worse, so this holding is bought once and kept.</div>
+      <div class="warn">Paper only. Backtest 2006–2026 (5-year periods): with ₹2 lakh kept ready, buying on dips beat leaving it idle about 70 % of the time;
+        selling on rises lost money, so this never sells. A 20 % fall is no promise of a quick bounce (after 2013 gold took about 6 years to recover).</div>
       <section class="card">
-        <div class="strat-head"><h2 style="margin:0">GOLDBEES, bought once and kept (paper)</h2><span class="spacer"></span><span class="sub" id="gUpdated"></span></div>
+        <div class="strat-head"><h2 style="margin:0">GOLDBEES, kept and topped up on dips (paper)</h2><span class="spacer"></span><span class="sub" id="gUpdated"></span></div>
         <div id="gold"></div>
       </section>
     </div>
@@ -393,24 +393,30 @@ function renderGold() {
     : `closing prices of ${g.as_of} · updated ${g.updated.slice(11)} IST`;
   const pct = (v) => v == null ? "–" : (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(2) + "%";
   const tile = (label, value, c, note) => `<div class="tile"><div class="label">${label}</div><div class="value ${c}">${value}</div><div class="note">${note}</div></div>`;
+  const used = g.dips.filter((d) => d.done).length;
   let html = `<div class="tiles">` +
-    tile("Value now", "₹" + inr.format(g.value), "", `invested ₹${inr.format(g.capital)} on ${g.start}`) +
+    tile("Value now", "₹" + inr.format(g.value), "", `gold + reserve · total ₹${inr.format(g.invested)}`) +
     tile("Total profit / loss", money(g.pnl), cls(g.pnl), `${pct(g.pnl_pct)} incl. charges`) +
     tile("Today", g.day_pnl == null ? "–" : money(g.day_pnl), cls(g.day_pnl), `GOLDBEES ${pct(g.day_pct)}`) +
-    tile("Fall from peak", pct(g.dd), cls(g.dd), "backtest worst: −29%") + `</div>`;
-  html += `<div class="scroll"><table><tr><th>Stock</th><th>Units</th><th>Bought on</th><th>Buy price</th><th>Last price</th><th>Value</th><th>P&amp;L</th><th>P&amp;L %</th></tr>` +
-    `<tr><td class="l">GOLDBEES</td><td>${inr.format(g.units)}</td><td>${g.start}</td><td>${px.format(g.buy_px)}</td><td>${px.format(g.price)}</td><td>₹${inr.format(g.holding_value)}</td><td class="${cls(g.pnl)}">${money(g.pnl)}</td><td class="${cls(g.pnl_pct)}">${pct(g.pnl_pct)}</td></tr>` +
+    tile("Reserve left", "₹" + inr.format(g.reserve), "", `${used} of ${g.dips.length} dip parts used`) +
+    tile("Below 1-year high", pct(g.off_high), cls(g.off_high), `high ₹${px.format(g.high_1y)} (closing)`) + `</div>`;
+  html += `<div class="scroll"><table><tr><th>Stock</th><th>Units</th><th>Avg buy price</th><th>Last price</th><th>Cost</th><th>Value</th><th>P&amp;L</th><th>P&amp;L %</th></tr>` +
+    `<tr><td class="l">GOLDBEES</td><td>${inr.format(g.units)}</td><td>${px.format(g.buy_px)}</td><td>${px.format(g.price)}</td><td>₹${inr.format(g.gold_cost)}</td><td>₹${inr.format(g.holding_value)}</td><td class="${cls(g.gold_pnl)}">${money(g.gold_pnl)}</td><td class="${cls(g.gold_pnl_pct)}">${pct(g.gold_pnl_pct)}</td></tr>` +
+    `<tr><td class="l">Reserve (not yet used)</td><td></td><td></td><td></td><td></td><td>₹${inr.format(g.reserve)}</td><td></td><td></td></tr>` +
     `<tr><td class="l">Cash left over</td><td></td><td></td><td></td><td></td><td>₹${inr.format(g.cash)}</td><td></td><td></td></tr></table></div>`;
+  html += `<h2 style="margin-top:16px">Dip top-ups</h2><div class="scroll"><table><tr><th class="l">Part</th><th>Buy when GOLDBEES closes at or below</th><th>Amount</th><th class="l">Status</th></tr>` +
+    g.dips.map((d) => `<tr><td class="l">${d.level}% below the 1-year high</td><td>₹${px.format(d.trigger)}</td><td>₹${inr.format(d.amount)}</td><td class="l">${d.done ? "bought " + d.done : "waiting"}</td></tr>`).join("") +
+    `</table></div><p class="sub" style="margin:6px 0 0">Trigger prices move up if GOLDBEES makes a new 1-year high. A used part is not refilled.</p>`;
   if (g.months.length) {
-    html += `<h2 style="margin-top:16px">Month by month</h2><div class="scroll"><table><tr><th>Month</th><th>GOLDBEES</th><th>Value at month end</th></tr>` +
-      [...g.months].reverse().map((r) => `<tr><td>${monthName(r.month, true)}</td><td class="${cls(r.pct)}">${pct(r.pct)}</td><td>₹${inr.format(r.value)}</td></tr>`).join("") + `</table></div>`;
+    html += `<h2 style="margin-top:16px">Month by month</h2><div class="scroll"><table><tr><th>Month</th><th>GOLDBEES price</th><th>Gold + reserve</th><th>Value at month end</th></tr>` +
+      [...g.months].reverse().map((r) => `<tr><td>${monthName(r.month, true)}</td><td class="${cls(r.gold_pct)}">${pct(r.gold_pct)}</td><td class="${cls(r.ret_pct)}">${pct(r.ret_pct)}</td><td>₹${inr.format(r.value)}</td></tr>`).join("") + `</table></div>`;
   }
   const tr = (g.trades || []).slice().reverse();
   if (tr.length) {
-    html += `<details style="margin-top:12px"><summary class="sub">Paper gold buys (${tr.length})</summary><div class="scroll"><table><tr><th>Date</th><th class="l">Side</th><th>Units</th><th>Price</th><th>Value</th><th>Charges</th></tr>` +
-      tr.map((t) => `<tr><td>${t.day}</td><td class="l">${esc(t.side)}</td><td>${inr.format(+t.qty)}</td><td>${px.format(+t.price)}</td><td>₹${inr.format(+t.value)}</td><td>₹${inr.format(+t.charges)}</td></tr>`).join("") + `</table></div></details>`;
+    html += `<details style="margin-top:12px"><summary class="sub">Paper gold buys (${tr.length})</summary><div class="scroll"><table><tr><th>Date</th><th class="l">Why</th><th>Units</th><th>Price</th><th>Value</th><th>Charges</th></tr>` +
+      tr.map((t) => `<tr><td>${t.day}</td><td class="l">${esc(t.why || "start")}</td><td>${inr.format(+t.qty)}</td><td>${px.format(+t.price)}</td><td>₹${inr.format(+t.value)}</td><td>₹${inr.format(+t.charges)}</td></tr>`).join("") + `</table></div></details>`;
   }
-  html += `<p class="sub" style="margin:10px 0 0">${esc(g.rule)} Separate from the momentum portfolio on the first tab. Buy price includes charges (delivery, 0.1% slippage).</p>`;
+  html += `<p class="sub" style="margin:10px 0 0">${esc(g.rule)} The reserve earns nothing here. Separate from the momentum portfolio on the first tab.</p>`;
   box.innerHTML = html;
 }
 function setTile(id, v, note) {

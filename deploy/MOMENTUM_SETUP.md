@@ -81,10 +81,11 @@ Check it: `journalctl -u momentum-live -n 10 --no-pager`. Run it now by hand: `s
 
 ## Gold (GOLDBEES) tab
 
-`gold_paper.py` keeps a separate paper GOLDBEES holding: bought once for Rs 1,27,142 on
-4 Nov 2026 and kept, with no selling, no top-ups and no timing (gold_test.py: every timing rule
-did worse than holding). It has nothing to do with the momentum portfolio; it only runs in the
-same two services (evening record and the 15-minute live re-pricing).
+`gold_paper.py` keeps a separate paper GOLDBEES holding: Rs 1,27,142 bought on 4 Nov 2026 and
+kept, plus Rs 2,00,000 kept ready in 4 parts of Rs 50,000. One part is bought at the evening close
+when GOLDBEES is 5 / 10 / 15 / 20 % below its 1-year high close; each part is used once and it never
+sells (gold_dip_test.py). It has nothing to do with the momentum portfolio; it only runs in the
+same two services (evening record and the 15-minute live re-pricing, which never buys).
 Files: `paper_data/gold_state.json`, `gold_trades.csv`, `gold.json`.
 
 Update it on the VPS (as root, after pushing from the laptop):
