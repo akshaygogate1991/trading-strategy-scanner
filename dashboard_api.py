@@ -76,9 +76,10 @@ def build(data_dir):
     gold = read_json(os.path.join(data_dir, "gold.json"))
     if gold is not None:
         gold["trades"] = read_csv(os.path.join(data_dir, "gold_trades.csv"))[-50:]
+    intraday = read_json(os.path.join(data_dir, "kronos_intraday.json"))
     return dict(live=read_json(os.path.join(data_dir, "live.json")), trades=trades[-500:], daily=daily,
                 monthly=monthly, total=round(sum(r["net"] or 0.0 for r in daily), 2), momentum=momentum, gold=gold,
-                kronos=kronos(data_dir, trades))
+                kronos=kronos(data_dir, trades), kronos_intraday=intraday)
 
 
 def kronos(data_dir, trades):

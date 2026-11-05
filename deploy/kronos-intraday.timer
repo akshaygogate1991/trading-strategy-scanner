@@ -1,0 +1,16 @@
+[Unit]
+Description=Kronos intraday paper trades at 09:45, 10:10, 11:00, 12:30, 13:30, 14:30 IST (+1 min), settle at 15:46
+
+[Timer]
+OnCalendar=Mon..Fri 09:46 Asia/Kolkata
+OnCalendar=Mon..Fri 10:11 Asia/Kolkata
+OnCalendar=Mon..Fri 11:01 Asia/Kolkata
+OnCalendar=Mon..Fri 12:31 Asia/Kolkata
+OnCalendar=Mon..Fri 13:31 Asia/Kolkata
+OnCalendar=Mon..Fri 14:31 Asia/Kolkata
+OnCalendar=Mon..Fri 15:46 Asia/Kolkata
+# a late run would trade on stale prices, so missed runs are not made up
+Persistent=false
+
+[Install]
+WantedBy=timers.target

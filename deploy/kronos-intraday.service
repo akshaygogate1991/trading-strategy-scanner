@@ -1,0 +1,14 @@
+[Unit]
+Description=Kronos intraday paper trades: live forecast at set times, trade at once (no orders - paper only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=trader
+WorkingDirectory=/home/trader/trading-strategy
+Environment=KRONOS_DIR=/home/trader/Kronos PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8
+ExecStart=/home/trader/trading-strategy/.venv/bin/python kronos_intraday_paper.py
+# three forecasts in one batch take under a minute; lower priority so the Sensex paper trader keeps its CPU
+Nice=10
+TimeoutStartSec=8min

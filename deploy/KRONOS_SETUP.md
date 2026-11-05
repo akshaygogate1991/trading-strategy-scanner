@@ -45,3 +45,23 @@ The first signals are made at the next weekday 17:55 run. The first trades settl
 | Run now by hand | `systemctl start kronos-paper` |
 | Signals | `cat /home/trader/trading-strategy/paper_data/kronos_signals.csv` |
 | Trades | `cat /home/trader/trading-strategy/paper_data/kronos_trades.csv` |
+
+## Intraday Kronos paper trades (forecast in the live market, trade at once)
+
+`kronos_intraday_paper.py` runs at 09:46, 10:11, 11:01, 12:31, 13:31, 14:31 IST (forecasts for 09:45,
+10:10, 11:00, 12:30, 13:30, 14:30) and 15:46 (settles). For Nifty, Bank Nifty and Sensex it asks
+Kronos for the next 4 fifteen-minute candles (10 paths, 160 candles of history) and takes a paper
+trade of 1 lot at once: BUY if >= 60 % of paths end up, SELL if <= 40 %, exit after 30 and after
+60 minutes (two separate paper trades). Prices from Yahoo 5-minute candles; no login, no orders.
+It runs at low CPU priority so the Sensex paper trader keeps its CPU.
+The results are in the Kronos tab, "Intraday Kronos", as a time x index table.
+The same rule is backtested on Jul 2024 - Jul 2026 by `kronos_intraday_test.py` (laptop).
+
+Turn it on (as root on the VPS, after pushing from the laptop):
+
+```
+su - trader -c "cd ~/trading-strategy && git pull" && cp /home/trader/trading-strategy/deploy/kronos-intraday.service /home/trader/trading-strategy/deploy/kronos-intraday.timer /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now kronos-intraday.timer && systemctl restart dashboard-api && systemctl list-timers kronos-intraday.timer --no-pager
+```
+
+Check a run: `journalctl -u kronos-intraday -n 20 --no-pager`. Try it by hand outside market hours
+(saves nothing): `su - trader -c "cd ~/trading-strategy && KRONOS_DIR=/home/trader/Kronos .venv/bin/python kronos_intraday_paper.py --dry-run"`

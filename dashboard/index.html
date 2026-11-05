@@ -162,6 +162,10 @@
           on SELL days only the sold call, otherwise both. Approximate: the overall stop is not re-run.</p>
         <div id="kDir"></div>
       </section>
+      <section class="card">
+        <div class="strat-head"><h2 style="margin:0">Intraday Kronos: forecast in the live market, trade at once</h2><span class="spacer"></span><span class="sub" id="kiUpdated"></span></div>
+        <div id="kIntra"></div>
+      </section>
       <p class="sub">Futures amounts use the index price as the futures price, 0.015% charges + slippage per side and ₹5/order.
         Signals are made after each close (weekday evening run), traded at the next session's open and closed at its close.</p>
     </div>
@@ -268,7 +272,7 @@ function render() {
   $("tSpotNote").textContent = live ? `at ${live.bar}${isToday ? "" : ", " + live.day}` : "";
 
   renderStrategies(live, isToday);
-  renderMonths(); renderEquity(); renderMomentum(); renderKronos(); renderGold();
+  renderMonths(); renderEquity(); renderMomentum(); renderKronos(); renderGold(); renderIntraday();
 }
 
 // ---- Kronos tab
@@ -379,6 +383,36 @@ function renderMomentum() {
   const listAge = m.candidates_made ? (Date.now() - new Date(m.candidates_made)) / 86400000 : 0;
   if (listAge > 100) html += `<div class="warn" style="margin:12px 0 0">The stock list is ${Math.round(listAge)} days old (made ${m.candidates_made}). On the laptop run <code>python momentum_paper.py --refresh-candidates</code>, then push.</div>`;
   html += `<p class="sub" style="margin:10px 0 0">${esc(m.rule)} Backtest: about 26% a year but falls of up to 34%, and the edge was only clear from 2020. Paper tracking only.</p>`;
+  box.innerHTML = html;
+}
+function renderIntraday() {
+  const k = data.kronos_intraday, box = $("kIntra");
+  if (!k) {
+    $("kiUpdated").textContent = "";
+    box.innerHTML = `<div class="empty">Not started yet. The first forecast is at 09:45 IST on the next trading day.</div>`;
+    return;
+  }
+  $("kiUpdated").textContent = `since ${k.start} · updated ${k.updated.slice(11)} IST`;
+  const pc = (v) => v === "" || v == null ? "–" : Math.round(+v * 100) + "%";
+  const sig = (p) => +p >= 0.6 ? `<span class="side-BUY">BUY</span>` : +p <= 0.4 ? `<span class="side-SELL">SELL</span>` : "no trade";
+  const syms = Object.keys(k.lots);
+  let html = `<p class="sub" style="margin-top:0">${esc(k.rule)}</p>`;
+  if (k.today.length) {
+    html += `<h2>Latest day's forecasts (${k.today[0].day})</h2><div class="scroll"><table><tr><th>Time</th><th class="l">Index</th><th>P(up) 30 min</th><th class="l">30 min</th><th>P(up) 60 min</th><th class="l">60 min</th></tr>` +
+      k.today.map((r) => `<tr><td>${r.time}</td><td class="l">${esc(r.sym)}</td><td>${pc(r.p_up30)}</td><td class="l">${sig(r.p_up30)}</td><td>${pc(r.p_up60)}</td><td class="l">${sig(r.p_up60)}</td></tr>`).join("") + `</table></div>`;
+  }
+  const cell = (r) => r.trades ? `<span class="${cls(r.net)}">${money(r.net)}</span> <span class="sub">${r.right}/${r.trades}</span>` : "–";
+  html += `<h2 style="margin-top:16px">Which time and index works: net P&amp;L (right / trades)</h2><div class="scroll"><table><tr><th>Time</th><th>Exit after</th>` +
+    syms.map((x) => `<th>${esc(x)}</th>`).join("") + `<th>All three</th></tr>` +
+    k.times.flatMap((t) => [30, 60].map((h) => { const rs = syms.map((x) => k.table.find((r) => r.sym === x && r.time === t && r.exit_after === h));
+      const tot = rs.reduce((a, r) => a + r.net, 0), n = rs.reduce((a, r) => a + r.trades, 0);
+      return `<tr><td>${t}</td><td>${h} min</td>${rs.map((r) => `<td>${cell(r)}</td>`).join("")}<td class="${cls(tot)}">${n ? money(tot) : "–"}</td></tr>`; })).join("") +
+    `<tr><th class="l">Total</th><th></th>${syms.map((x) => { const v = k.table.filter((r) => r.sym === x).reduce((a, r) => a + r.net, 0); return `<th class="${cls(v)}">${money(v)}</th>`; }).join("")}<th class="${cls(k.total)}">${money(k.total)}</th></tr></table></div>`;
+  const tr = k.trades.slice().reverse();
+  if (tr.length) {
+    html += `<details style="margin-top:12px"><summary class="sub">Paper trades (${tr.length})</summary><div class="scroll"><table><tr><th>Date</th><th>Time</th><th class="l">Index</th><th class="l">Side</th><th>P(up)</th><th>Exit</th><th>Entry</th><th>Exit price</th><th>Points</th><th>Charges</th><th>Net</th></tr>` +
+      tr.map((t) => `<tr><td>${t.day}</td><td>${t.time}</td><td class="l">${esc(t.sym)}</td><td class="l"><span class="side-${t.side}">${t.side}</span></td><td>${pc(t.p_up)}</td><td>${t.exit_time}</td><td>${px.format(+t.entry)}</td><td>${t.exit === "" ? "open" : px.format(+t.exit)}</td><td class="${cls(+t.points)}">${t.points === "" ? "–" : px.format(+t.points)}</td><td>${t.charges === "" ? "–" : "₹" + inr.format(+t.charges)}</td><td class="${cls(+t.net)}">${t.net === "" ? "–" : money(+t.net)}</td></tr>`).join("") + `</table></div></details>`;
+  }
   box.innerHTML = html;
 }
 function renderGold() {
